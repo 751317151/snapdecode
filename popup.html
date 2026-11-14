@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>码上解</title>
+<style>
+  * { box-sizing: border-box; }
+  body { width: 420px; margin: 0; padding: 0;
+    font-family: -apple-system, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-size: 13px; color: #202124; }
+  .tabs { display: flex; border-bottom: 1px solid #dadce0; background: #f8f9fa; }
+  .tab-btn { flex: 1; border: none; background: transparent; padding: 10px 4px;
+    font-size: 13px; color: #5f6368; cursor: pointer; border-bottom: 2px solid transparent; }
+  .tab-btn:hover { color: #202124; }
+  .tab-btn.on { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
+  .panel { display: none; padding: 12px; max-height: 540px; overflow-y: auto; }
+  .panel.on { display: block; }
+  textarea, input[type="text"], input[type="password"], select {
+    width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.5px; padding: 8px; border: 1px solid #dadce0; border-radius: 6px; }
+  textarea { resize: vertical; }
+  input[type="text"], input[type="password"], select { font-family: inherit; }
+  select { width: auto; }
+  #codecInput { height: 80px; }
+  #codecOutput { height: 120px; background: #f8f9fa; }
+  #batchInput { height: 120px; }
+  #aesInput { height: 70px; }
+  #aesOutput { height: 70px; background: #f8f9fa; }
+  .row { display: flex; gap: 8px; margin: 8px 0; align-items: center; flex-wrap: wrap; }
+  button { border: 1px solid #dadce0; background: #fff; color: #1a73e8;
+    font-size: 13px; padding: 6px 14px; border-radius: 16px; cursor: pointer; }
+  button:hover { background: #f0f4f9; }
+  button.primary { background: #1a73e8; border-color: #1a73e8; color: #fff; font-weight: 600; }
+  button.primary:hover { background: #1765cc; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button:disabled:hover { background: #fff; }
+  button.small { font-size: 12px; padding: 3px 10px; }
+  button.danger { color: #d93025; }
+  .error { color: #d93025; font-size: 12px; min-height: 16px; margin-top: 4px; }
+  .meta { color: #5f6368; font-size: 12px; min-height: 16px; margin-top: 4px; }
+  .hint { color: #5f6368; font-size: 12px; line-height: 1.5; margin: 10px 0 0;
+    border-top: 1px solid #e8eaed; padding-top: 8px; }
+  kbd { background: #f1f3f4; border: 1px solid #dadce0; border-radius: 4px;
+    padding: 0 4px; font-family: inherit; font-size: 11.5px; }
+  #codecImg { display: none; max-width: 100%; max-height: 200px; margin: 8px auto;
+    border: 1px solid #dadce0; border-radius: 6px; background: #fff; }
+  .section { font-weight: 600; font-size: 13px; margin: 12px 0 6px; }
+  .section:first-child { margin-top: 0; }
+  .hash-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .hash-row label { width: 64px; flex-shrink: 0; color: #5f6368; font-size: 12px; }
+  .hash-row input { flex: 1; font-size: 11.5px; padding: 6px; }
+  .batch-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 0;
+    border-bottom: 1px solid #e8eaed; font-size: 12px; }
+  .batch-row:last-child { border-bottom: none; }
+  .batch-no { color: #5f6368; flex-shrink: 0; width: 24px; }
+  .batch-out { flex: 1; word-break: break-all; font-family: ui-monospace, Menlo, Consolas, monospace; }
+  .batch-out.err { color: #d93025; }
+  .hist-item { padding: 8px 0; border-bottom: 1px solid #e8eaed; }
+  .hist-item:last-child { border-bottom: none; }
+  .hist-head { display: flex; justify-content: space-between; color: #5f6368; font-size: 11.5px; }
+  .hist-badge { background: #e8f0fe; color: #1a73e8; border-radius: 8px; padding: 0 6px; }
+  .hist-text { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    word-break: break-all; margin: 4px 0; white-space: pre-wrap; }
+  .hist-text.dim { color: #5f6368; }
+  .empty { color: #5f6368; text-align: center; padding: 20px 0; font-size: 12.5px; }
+</style>
+</head>
+<body>
+  <div class="tabs">
+    <button class="tab-btn on" data-tab="codec">编解码</button>
+    <button class="tab-btn" data-tab="batch">批量</button>
+    <button class="tab-btn" data-tab="tools">工具</button>
+    <button class="tab-btn" data-tab="history">历史</button>
+  </div>
+
+  <div class="panel on" id="tab-codec">
+    <div class="row">
+      <select id="formatSelect">
+        <option value="auto">自动识别</option>
+        <option value="base64">Base64</option>
+        <option value="hex">Hex</option>
+        <option value="url">URL 编码</option>
+        <option value="unicode">Unicode 转义</option>
+        <option value="jwt">JWT</option>
+      </select>
+      <span class="meta" style="margin:0">选中网页文本后右键也可直接解码</span>
+    </div>
+    <textarea id="codecInput" placeholder="在此粘贴要解码的内容，或要编码的文本…" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="decodeBtn" class="primary">解码</button>
+      <button id="encodeBtn">编码为 Base64</button>
+      <button id="clearBtn">清空</button>
+    </div>
+    <div class="error" id="codecError"></div>
+    <div class="meta" id="codecMeta"></div>
+    <img id="codecImg" alt="解码出的图片">
+    <textarea id="codecOutput" readonly placeholder="结果会显示在这里" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="copyBtn">复制结果</button>
+      <button id="jsonToggleBtn" style="display:none">显示原文</button>
+    </div>
+    <div class="row">
+      <button id="scanBtn">扫描当前页面</button>
+      <button id="clearScanBtn">清除高亮</button>
+      <span class="meta" id="scanStatus" style="margin:0"></span>
+    </div>
+    <p class="hint">在任意网页上用鼠标选中 Base64 文本后，选区旁会直接出现「解码 / 编码」按钮；也可以右键 →「智能解码」，或按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 解码、<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 编码。</p>
+  </div>
+
+  <div class="panel" id="tab-batch">
+    <textarea id="batchInput" placeholder="每行一条要解码的内容（自动识别格式）…" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="batchBtn" class="primary">批量解码</button>
+      <button id="batchCopyBtn">复制全部结果</button>
+      <button id="batchClearBtn">清空</button>
+    </div>
+    <div class="meta" id="batchMeta"></div>
+    <div id="batchResults"></div>
+  </div>
+
+  <div class="panel" id="tab-tools">
+    <div class="section">哈希计算</div>
+    <input type="text" id="hashInput" placeholder="输入要计算哈希的文本" spellcheck="false">
+    <div class="row"><button id="hashBtn" class="primary">计算哈希</button></div>
+    <div class="hash-row"><label>MD5</label><input type="text" id="hashMd5" readonly><button class="small" data-copy="hashMd5">复制</button></div>
+    <div class="hash-row"><label>SHA-1</label><input type="text" id="hashSha1" readonly><button class="small" data-copy="hashSha1">复制</button></div>
+    <div class="hash-row"><label>SHA-256</label><input type="text" id="hashSha256" readonly><button class="small" data-copy="hashSha256">复制</button></div>
+    <div class="hash-row"><label>SHA-512</label><input type="text" id="hashSha512" readonly><button class="small" data-copy="hashSha512">复制</button></div>
+
+    <div class="section">AES 加解密（口令派生，AES-256-GCM）</div>
+    <input type="password" id="aesPass" placeholder="口令（加密与解密用同一个口令）" spellcheck="false">
+    <div style="height:8px"></div>
+    <textarea id="aesInput" placeholder="要加密的明文，或要解密的密文（以 AES-GCM:v1: 开头）" spellcheck="false"></textarea>
+    <div class="row">
+      <button id="aesEncBtn" class="primary">加密</button>
+      <button id="aesDecBtn">解密</button>
+    </div>
+    <div class="error" id="aesError"></div>
+    <textarea id="aesOutput" readonly placeholder="结果会显示在这里" spellcheck="false"></textarea>
+    <div class="row"><button id="aesCopyBtn">复制结果</button></div>
+  </div>
+
+  <div class="panel" id="tab-history">
+    <div class="row">
+      <input type="text" id="histSearch" placeholder="搜索历史记录…" spellcheck="false" style="flex:1">
+      <button id="histClearBtn" class="danger">清空历史</button>
+    </div>
+    <div class="meta">只保存在本机浏览器内（最近 50 条），不上传。</div>
+    <div id="histList"></div>
+  </div>
+
+  <script src="codec.js"></script>
+  <script src="cryptools.js"></script>
+  <script src="store.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

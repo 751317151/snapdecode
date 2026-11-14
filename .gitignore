@@ -1,0 +1,7 @@
+# OS / editor files
+.DS_Store
+Thumbs.db
+*.log
+
+# Packaged builds (don't commit the zip)
+*.zip
