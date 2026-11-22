@@ -1,4 +1,4 @@
-// Content script v2: smart decode / encode of the current selection with a
+// Content script v3: smart decode / encode of the current selection with a
 // floating result panel (Shadow DOM), a floating decode/encode button that
 // appears next to a selection, and a page scanner that highlights encoded
 // tokens. Successful decodes are saved to local history (B64Store).
@@ -109,10 +109,19 @@
     });
   }
 
+  // Can the decoded text itself be decoded one more layer?
+  function looksDecodableAgain(text) {
+    if (!text) return false;
+    if (B64Codec.looksLikeBase64(text)) return true;
+    var f = B64Codec.detectFormat(text);
+    return f === 'morse' || f === 'binary' || f === 'base32' || f === 'base58' ||
+      f === 'base85' || f === 'base91' || f === 'hex' || f === 'url' || f === 'html';
+  }
+
   function decodeAgain() {
     if (!session) return;
     var text = session.result && session.result.text;
-    if (!text || !B64Codec.looksLikeBase64(text)) return;
+    if (!looksDecodableAgain(text)) return;
     var next = B64Codec.smartDecode(text);
     B64Codec.enhanceDecoded(next).then(function (enhanced) {
       if (!enhanced.ok) return;
@@ -247,8 +256,10 @@
     // format switcher (decode mode, single result)
     if (session.mode === 'decode' && result.kind !== 'multiple') {
       var sw = el('div', 'b64d-switch');
-      var formats = [['auto', '自动'], ['base64', 'Base64'], ['hex', 'Hex'],
-                     ['url', 'URL'], ['unicode', 'Unicode'], ['jwt', 'JWT']];
+      var formats = [['auto', '自动'], ['base64', 'Base64'], ['base32', 'Base32'],
+                     ['base58', 'Base58'], ['hex', 'Hex'], ['binary', '二进制'],
+                     ['url', 'URL'], ['unicode', 'Unicode'], ['html', 'HTML'],
+                     ['morse', '摩斯'], ['jwt', 'JWT']];
       formats.forEach(function (f) {
         var b = el('button', 'b64d-sw' + (session.format === f[0] ? ' b64d-sw-on' : ''), f[1]);
         b.addEventListener('click', function () { forceFormat(f[0]); });
@@ -299,9 +310,9 @@
         dlBtn.addEventListener('click', function () { downloadImage(result); });
         foot.appendChild(dlBtn);
       }
-      if (result.kind === 'text' && result.text && B64Codec.looksLikeBase64(result.text)) {
+      if (result.kind === 'text' && looksDecodableAgain(result.text)) {
         var againBtn = el('button', 'b64d-btn', '再次解码');
-        againBtn.title = '结果本身看起来还是 Base64，继续解一层';
+        againBtn.title = '结果本身看起来还能再解一层';
         againBtn.addEventListener('click', decodeAgain);
         foot.appendChild(againBtn);
       }
@@ -349,7 +360,7 @@
     body.appendChild(el('div', 'b64d-sub', 'Signature'));
     var sig = el('div', 'b64d-sig', truncate(result.signature, 64));
     body.appendChild(sig);
-    body.appendChild(el('div', 'b64d-hint', '签名无法在此验证，验证需要密钥。'));
+    body.appendChild(el('div', 'b64d-hint', '签名验证请到插件弹窗的「工具」页。'));
   }
 
   function jsonPre(part) {

@@ -1,5 +1,5 @@
-// Popup logic v2: tabbed tool — codec (decode/encode + page scan),
-// batch decode, hash/AES tools, local history.
+// Popup logic v3: tabbed tool — codec (decode/encode + page scan),
+// batch decode, hash/HMAC/cipher/JWT/generator tools, local history.
 'use strict';
 
 var $ = function (id) { return document.getElementById(id);};
@@ -86,7 +86,7 @@ if (f) claims.push(k + ': ' + result.payload.json[k] + ' → ' + f);
 });
 if (claims.length) parts.push('\n' + claims.join('\n'));
 }
-parts.push('\n' + result.signature + '\n（签名无法在此验证，验证需要密钥）');
+parts.push('\n' + result.signature + '\n（签名验证请到「工具」页）');
 metaEl.textContent = 'JWT 解析完成';
 outEl.value = parts.join('\n\n');
 codecState.rawText = outEl.value;
@@ -120,10 +120,15 @@ outEl.value = full;
 }
 }
 
+function codecOpts() {
+var shift = parseInt($('caesarShift').value, 10);
+return { shift: isNaN(shift) ? 3 : shift };
+}
+
 function doCodecDecode() {
 var input = $('codecInput').value;
 var fmt = $('formatSelect').value;
-var result = fmt === 'auto'? B64Codec.smartDecode(input): B64Codec.decodeAs(input, fmt);
+var result = fmt === 'auto'? B64Codec.smartDecode(input): B64Codec.decodeAs(input, fmt, codecOpts());
 B64Codec.enhanceDecoded(result).then(function (enhanced) {
 setCodecOutput(enhanced);
 saveCodecHistory('decode', input, enhanced);
@@ -137,15 +142,15 @@ $('codecError').textContent = '请输入要编码的文本';
 return;
 }
 var fmt = $('formatSelect').value;
-var encoded, format;
-switch (fmt) {
-case 'hex': encoded = B64Codec.encodeHex(input); format = 'hex'; break;
-case 'url': encoded = B64Codec.encodeUrl(input); format = 'url'; break;
-case 'unicode': encoded = B64Codec.encodeUnicode(input); format = 'unicode'; break;
-case 'jwt':
-$('codecError').textContent = 'JWT 需要签名，无法直接编码';
+if (fmt === 'jwt') {
+$('codecError').textContent = 'JWT 需要签名，请到「工具」页生成';
 return;
-default: encoded = B64Codec.encodeBase64(input); format = 'base64';
+}
+var format = fmt === 'auto' ? 'base64' : fmt;
+var encoded = B64Codec.encodeAs(input, format, codecOpts());
+if (encoded == null) {
+$('codecError').textContent = '这种格式无法直接编码';
+return;
 }
 setCodecOutput({ ok: true, kind: 'text', text: encoded, encoding: 'UTF-8',
 byteLength: encoded.length, bytes: null, format: format });
@@ -158,11 +163,23 @@ function updateEncodeButton() {
 var fmt = $('formatSelect').value;
 var btn = $('encodeBtn');
 btn.disabled = false;
+$('caesarRow').style.display = fmt === 'caesar' ? '' : 'none';
 switch (fmt) {
+case 'base32': btn.textContent = '编码为 Base32'; break;
+case 'base58': btn.textContent = '编码为 Base58'; break;
+case 'base62': btn.textContent = '编码为 Base62'; break;
+case 'base85': btn.textContent = '编码为 Base85'; break;
+case 'base91': btn.textContent = '编码为 Base91'; break;
 case 'hex': btn.textContent = '编码为 Hex'; break;
+case 'binary': btn.textContent = '编码为二进制'; break;
+case 'octal': btn.textContent = '编码为八进制'; break;
 case 'url': btn.textContent = '编码为 URL'; break;
 case 'unicode': btn.textContent = '编码为 Unicode'; break;
-case 'jwt': btn.textContent = 'JWT 无法编码'; btn.disabled = true; break;
+case 'html': btn.textContent = '编码为 HTML 实体'; break;
+case 'morse': btn.textContent = '编码为摩斯电码'; break;
+case 'rot13': btn.textContent = 'ROT13 转换'; break;
+case 'caesar': btn.textContent = '凯撒加密'; break;
+case 'jwt': btn.textContent = 'JWT 请到工具页签名'; btn.disabled = true; break;
 default: btn.textContent = '编码为 Base64';
 }
 }
@@ -332,12 +349,16 @@ batchOutputs = [];
 $('hashBtn').addEventListener('click', function () {
 var text = $('hashInput').value;
 $('hashMd5').value = B64Crypto.md5(text);
+$('hashSha3').value = B64Crypto.sha3_256(text);
+$('hashCrc32').value = B64Crypto.crc32(text);
 $('hashSha1').value = '计算中…';
 $('hashSha256').value = '计算中…';
+$('hashSha384').value = '计算中…';
 $('hashSha512').value = '计算中…';
 B64Crypto.shaAll(text).then(function (r) {
 $('hashSha1').value = r['SHA-1'];
 $('hashSha256').value = r['SHA-256'];
+$('hashSha384').value = r['SHA-384'];
 $('hashSha512').value = r['SHA-512'];
 });
 });
@@ -347,10 +368,35 @@ copyValue($(btn.dataset.copy).value, btn);
 });
 });
 
+$('hmacBtn').addEventListener('click', function () {
+var key = $('hmacKey').value;
+var msg = $('hmacInput').value;
+$('hmacSha256').value = '计算中…';
+$('hmacSha512').value = '计算中…';
+Promise.all([
+B64Crypto.hmac('SHA-256', key, msg),
+B64Crypto.hmac('SHA-512', key, msg)
+]).then(function (r) {
+$('hmacSha256').value = r[0];
+$('hmacSha512').value = r[1];
+});
+});
+
 $('aesEncBtn').addEventListener('click', function () {
 var pass = $('aesPass').value;
+var mode = $('cipherMode').value;
 $('aesError').textContent = '';
-B64Crypto.aesEncrypt($('aesInput').value, pass).then(function (ct) {
+if (mode === 'RC4' || mode === 'XOR') {
+try {
+$('aesOutput').value = mode === 'RC4'
+? B64Crypto.rc4Encrypt($('aesInput').value, pass)
+: B64Crypto.xorEncrypt($('aesInput').value, pass);
+} catch (err) {
+$('aesError').textContent = err.message;
+}
+return;
+}
+B64Crypto.aesEncrypt($('aesInput').value, pass, mode).then(function (ct) {
 $('aesOutput').value = ct;
 }).catch(function (err) {
 $('aesError').textContent = err.message;
@@ -358,7 +404,20 @@ $('aesError').textContent = err.message;
 });
 $('aesDecBtn').addEventListener('click', function () {
 var pass = $('aesPass').value;
+var mode = $('cipherMode').value;
 $('aesError').textContent = '';
+if (mode === 'RC4' || mode === 'XOR') {
+try {
+$('aesOutput').value = mode === 'RC4'
+? B64Crypto.rc4Decrypt($('aesInput').value, pass)
+: B64Crypto.xorDecrypt($('aesInput').value, pass);
+} catch (err) {
+$('aesError').textContent = err.message;
+$('aesOutput').value = '';
+}
+return;
+}
+// AES 解密按密文前缀自动识别 GCM / CBC / CTR
 B64Crypto.aesDecrypt($('aesInput').value, pass).then(function (pt) {
 $('aesOutput').value = pt;
 }).catch(function (err) {
@@ -368,6 +427,71 @@ $('aesOutput').value = '';
 });
 $('aesCopyBtn').addEventListener('click', function () {
 copyValue($('aesOutput').value, this);
+});
+
+$('jwtSignBtn').addEventListener('click', function () {
+$('jwtError').textContent = '';
+$('jwtMeta').textContent = '';
+var header, payload;
+try {
+header = JSON.parse($('jwtHeader').value);
+payload = JSON.parse($('jwtPayload').value || '{}');
+} catch (e) {
+$('jwtError').textContent = 'Header / Payload 不是合法的 JSON';
+return;
+}
+B64Crypto.jwtSign(header, payload, $('jwtSecret').value).then(function (token) {
+$('jwtOutput').value = token;
+$('jwtMeta').textContent = '已用 HS256 签名';
+}).catch(function (err) {
+$('jwtError').textContent = err.message;
+});
+});
+$('jwtVerifyBtn').addEventListener('click', function () {
+$('jwtError').textContent = '';
+$('jwtMeta').textContent = '';
+B64Crypto.jwtVerify($('jwtOutput').value, $('jwtSecret').value).then(function (r) {
+var meta = r.valid ? '签名有效 ✓' : '签名无效 ✗（密钥不对或 Token 被改过）';
+if (r.payload) meta += ' · Payload: ' + truncate(JSON.stringify(r.payload), 200);
+$('jwtMeta').textContent = meta;
+}).catch(function (err) {
+$('jwtError').textContent = err.message;
+});
+});
+$('jwtCopyBtn').addEventListener('click', function () {
+copyValue($('jwtOutput').value, this);
+});
+
+$('uuidBtn').addEventListener('click', function () {
+$('uuidOut').value = B64Crypto.uuidv4();
+});
+$('pwBtn').addEventListener('click', function () {
+$('pwOut').value = B64Crypto.generatePassword($('pwLen').value,
+{ symbols: $('pwSymbols').checked });
+});
+
+function renderTsResult(r) {
+if (!r.ok) {
+$('tsError').textContent = r.error;
+$('tsMeta').textContent = '';
+$('tsSeconds').value = '';
+$('tsMs').value = '';
+$('tsIso').value = '';
+$('tsLocal').value = '';
+return;
+}
+$('tsError').textContent = '';
+$('tsMeta').textContent = '已转换';
+$('tsSeconds').value = String(r.seconds);
+$('tsMs').value = String(r.ms);
+$('tsIso').value = r.iso;
+$('tsLocal').value = r.local;
+}
+$('tsToDateBtn').addEventListener('click', function () {
+renderTsResult(B64Crypto.timestampToDate($('tsInput').value));
+});
+$('dateToTsBtn').addEventListener('click', function () {
+renderTsResult(B64Crypto.dateToTimestamp($('tsInput').value));
 });
 
 // ---------------- history tab ----------------

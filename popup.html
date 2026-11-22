@@ -15,11 +15,11 @@
   .tab-btn.on { color: #1a73e8; border-bottom-color: #1a73e8; font-weight: 600; }
   .panel { display: none; padding: 12px; max-height: 540px; overflow-y: auto; }
   .panel.on { display: block; }
-  textarea, input[type="text"], input[type="password"], select {
+  textarea, input[type="text"], input[type="password"], input[type="number"], select {
     width: 100%; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: 12.5px; padding: 8px; border: 1px solid #dadce0; border-radius: 6px; }
   textarea { resize: vertical; }
-  input[type="text"], input[type="password"], select { font-family: inherit; }
+  input[type="text"], input[type="password"], input[type="number"], select { font-family: inherit; }
   select { width: auto; }
   #codecInput { height: 80px; }
   #codecOutput { height: 120px; background: #f8f9fa; }
@@ -78,12 +78,28 @@
       <select id="formatSelect">
         <option value="auto">自动识别</option>
         <option value="base64">Base64</option>
+        <option value="base32">Base32</option>
+        <option value="base58">Base58</option>
+        <option value="base62">Base62</option>
+        <option value="base85">Base85</option>
+        <option value="base91">Base91</option>
         <option value="hex">Hex</option>
+        <option value="binary">二进制</option>
+        <option value="octal">八进制</option>
         <option value="url">URL 编码</option>
         <option value="unicode">Unicode 转义</option>
+        <option value="html">HTML 实体</option>
+        <option value="morse">摩斯电码</option>
+        <option value="rot13">ROT13</option>
+        <option value="caesar">凯撒密码</option>
         <option value="jwt">JWT</option>
       </select>
       <span class="meta" style="margin:0">选中网页文本后右键也可直接解码</span>
+    </div>
+    <div class="row" id="caesarRow" style="display:none">
+      <label style="color:#5f6368;font-size:12px">凯撒位移</label>
+      <input type="number" id="caesarShift" value="3" min="1" max="25" style="width:64px">
+      <span class="meta" style="margin:0">解码时按相反方向移位</span>
     </div>
     <textarea id="codecInput" placeholder="在此粘贴要解码的内容，或要编码的文本…" spellcheck="false"></textarea>
     <div class="row">
@@ -104,7 +120,7 @@
       <button id="clearScanBtn">清除高亮</button>
       <span class="meta" id="scanStatus" style="margin:0"></span>
     </div>
-    <p class="hint">在任意网页上用鼠标选中 Base64 文本后，选区旁会直接出现「解码 / 编码」按钮；也可以右键 →「智能解码」，或按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 解码、<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 编码。</p>
+    <p class="hint">在任意网页上用鼠标选中编码文本后，选区旁会直接出现「解码 / 编码」按钮；也可以右键 →「智能解码」，或按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 解码、<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 编码。JWT 签名与验证在「工具」页。</p>
   </div>
 
   <div class="panel" id="tab-batch">
@@ -125,12 +141,32 @@
     <div class="hash-row"><label>MD5</label><input type="text" id="hashMd5" readonly><button class="small" data-copy="hashMd5">复制</button></div>
     <div class="hash-row"><label>SHA-1</label><input type="text" id="hashSha1" readonly><button class="small" data-copy="hashSha1">复制</button></div>
     <div class="hash-row"><label>SHA-256</label><input type="text" id="hashSha256" readonly><button class="small" data-copy="hashSha256">复制</button></div>
+    <div class="hash-row"><label>SHA-384</label><input type="text" id="hashSha384" readonly><button class="small" data-copy="hashSha384">复制</button></div>
     <div class="hash-row"><label>SHA-512</label><input type="text" id="hashSha512" readonly><button class="small" data-copy="hashSha512">复制</button></div>
+    <div class="hash-row"><label>SHA3-256</label><input type="text" id="hashSha3" readonly><button class="small" data-copy="hashSha3">复制</button></div>
+    <div class="hash-row"><label>CRC32</label><input type="text" id="hashCrc32" readonly><button class="small" data-copy="hashCrc32">复制</button></div>
 
-    <div class="section">AES 加解密（口令派生，AES-256-GCM）</div>
-    <input type="password" id="aesPass" placeholder="口令（加密与解密用同一个口令）" spellcheck="false">
+    <div class="section">HMAC（消息认证码）</div>
+    <input type="text" id="hmacKey" placeholder="密钥" spellcheck="false">
     <div style="height:8px"></div>
-    <textarea id="aesInput" placeholder="要加密的明文，或要解密的密文（以 AES-GCM:v1: 开头）" spellcheck="false"></textarea>
+    <input type="text" id="hmacInput" placeholder="要签名的消息" spellcheck="false">
+    <div class="row"><button id="hmacBtn" class="primary">计算 HMAC</button></div>
+    <div class="hash-row"><label style="width:96px">HMAC-SHA256</label><input type="text" id="hmacSha256" readonly><button class="small" data-copy="hmacSha256">复制</button></div>
+    <div class="hash-row"><label style="width:96px">HMAC-SHA512</label><input type="text" id="hmacSha512" readonly><button class="small" data-copy="hmacSha512">复制</button></div>
+
+    <div class="section">对称加解密</div>
+    <div class="row">
+      <select id="cipherMode">
+        <option value="GCM">AES-256-GCM（口令派生）</option>
+        <option value="CBC">AES-256-CBC（口令派生）</option>
+        <option value="CTR">AES-256-CTR（口令派生）</option>
+        <option value="RC4">RC4（密钥直接使用）</option>
+        <option value="XOR">XOR（密钥直接使用）</option>
+      </select>
+    </div>
+    <input type="password" id="aesPass" placeholder="口令或密钥（加密与解密用同一个）" spellcheck="false">
+    <div style="height:8px"></div>
+    <textarea id="aesInput" placeholder="要加密的明文，或要解密的密文" spellcheck="false"></textarea>
     <div class="row">
       <button id="aesEncBtn" class="primary">加密</button>
       <button id="aesDecBtn">解密</button>
@@ -138,6 +174,52 @@
     <div class="error" id="aesError"></div>
     <textarea id="aesOutput" readonly placeholder="结果会显示在这里" spellcheck="false"></textarea>
     <div class="row"><button id="aesCopyBtn">复制结果</button></div>
+    <div class="hint" style="margin-top:6px">AES 密文自带 AES-GCM:v1: / AES-CBC:v1: / AES-CTR:v1: 前缀，解密时自动识别模式；RC4 与 XOR 输出十六进制密文，密钥不做派生。</div>
+
+    <div class="section">JWT 签名与验证（HS256）</div>
+    <textarea id="jwtHeader" placeholder="Header JSON" spellcheck="false" style="height:44px">{"alg":"HS256","typ":"JWT"}</textarea>
+    <div style="height:8px"></div>
+    <textarea id="jwtPayload" placeholder='Payload JSON，如 {"sub":"123","name":"demo"}' spellcheck="false" style="height:60px"></textarea>
+    <div style="height:8px"></div>
+    <input type="text" id="jwtSecret" placeholder="签名密钥" spellcheck="false">
+    <div class="row">
+      <button id="jwtSignBtn" class="primary">生成 Token</button>
+      <button id="jwtVerifyBtn">验证签名</button>
+    </div>
+    <div class="error" id="jwtError"></div>
+    <div class="meta" id="jwtMeta"></div>
+    <textarea id="jwtOutput" placeholder="生成的 Token 或验证结果会显示在这里；验证时请把 Token 粘贴到这里再点「验证签名」" spellcheck="false" style="height:70px"></textarea>
+    <div class="row"><button id="jwtCopyBtn">复制结果</button></div>
+
+    <div class="section">生成器</div>
+    <div class="row">
+      <button id="uuidBtn">生成 UUID v4</button>
+      <input type="text" id="uuidOut" readonly placeholder="点左侧按钮生成" spellcheck="false" style="flex:1">
+      <button class="small" data-copy="uuidOut">复制</button>
+    </div>
+    <div class="row">
+      <label style="color:#5f6368;font-size:12px">密码长度</label>
+      <input type="number" id="pwLen" value="16" min="4" max="128" style="width:64px">
+      <label style="font-size:12px"><input type="checkbox" id="pwSymbols"> 含符号</label>
+      <button id="pwBtn">生成密码</button>
+    </div>
+    <div class="row">
+      <input type="text" id="pwOut" readonly placeholder="点「生成密码」" spellcheck="false" style="flex:1">
+      <button class="small" data-copy="pwOut">复制</button>
+    </div>
+
+    <div class="section">时间戳转换</div>
+    <input type="text" id="tsInput" placeholder="时间戳（秒或毫秒）或日期时间，如 2026-11-22 12:00:00" spellcheck="false">
+    <div class="row">
+      <button id="tsToDateBtn" class="primary">时间戳 → 日期</button>
+      <button id="dateToTsBtn">日期 → 时间戳</button>
+    </div>
+    <div class="error" id="tsError"></div>
+    <div class="meta" id="tsMeta"></div>
+    <div class="hash-row"><label>秒</label><input type="text" id="tsSeconds" readonly><button class="small" data-copy="tsSeconds">复制</button></div>
+    <div class="hash-row"><label>毫秒</label><input type="text" id="tsMs" readonly><button class="small" data-copy="tsMs">复制</button></div>
+    <div class="hash-row"><label>ISO</label><input type="text" id="tsIso" readonly><button class="small" data-copy="tsIso">复制</button></div>
+    <div class="hash-row"><label>本地时间</label><input type="text" id="tsLocal" readonly><button class="small" data-copy="tsLocal">复制</button></div>
   </div>
 
   <div class="panel" id="tab-history">
