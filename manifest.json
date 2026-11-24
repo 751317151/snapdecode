@@ -30,6 +30,8 @@
       "js": [
         "codec.js",
         "store.js",
+        "lib/qrcode.js",
+        "lib/jsqr.js",
         "content.js"
       ],
       "matches": [
@@ -38,7 +40,7 @@
       "run_at": "document_idle"
     }
   ],
-  "description": "选中网页上的 Base64/Base32/Base58/Hex/URL 编码/摩斯电码/JWT 等文本，右键一键智能解码，在原地弹出结果；也可编码、批量解码、算哈希与 HMAC、AES/RC4/XOR 加解密、JWT 签名验证。",
+  "description": "选中网页上的 Base64/Base32/Base58/Base122/Base32768/Hex/URL 编码/摩斯电码/JWT 等文本，右键一键智能解码，在原地弹出结果；也可编解码链、批量解码、二维码生成与识别、算哈希与 HMAC、AES/3DES/ChaCha20/SM4 加解密、RSA/ECDSA/SM2、JSON/URL/正则/Diff 开发工具。",
   "icons": {
     "128": "icons/icon128.png",
     "16": "icons/icon16.png",
@@ -50,7 +52,8 @@
     "contextMenus",
     "activeTab",
     "scripting",
-    "storage"
+    "storage",
+    "clipboardRead"
   ],
-  "version": "3.0.0"
+  "version": "4.0.0"
 }

@@ -2,7 +2,7 @@
 // script in the active tab to decode/encode the current selection.
 'use strict';
 
-var CONTENT_FILES = ['codec.js', 'store.js', 'content.js'];
+var CONTENT_FILES = ['codec.js', 'store.js', 'lib/qrcode.js', 'lib/jsqr.js', 'content.js'];
 
 chrome.runtime.onInstalled.addListener(function () {
   chrome.contextMenus.create({

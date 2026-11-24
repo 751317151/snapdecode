@@ -63,6 +63,72 @@
     word-break: break-all; margin: 4px 0; white-space: pre-wrap; }
   .hist-text.dim { color: #5f6368; }
   .empty { color: #5f6368; text-align: center; padding: 20px 0; font-size: 12.5px; }
+  .fav-on { color: #e37400 !important; border-color: #e37400 !important; }
+  #qrImg { display: none; max-width: 200px; max-height: 200px; margin: 8px auto;
+    border: 1px solid #dadce0; border-radius: 6px; background: #fff; padding: 6px; }
+  .dropzone { border: 2px dashed #dadce0; border-radius: 8px; padding: 14px;
+    text-align: center; color: #5f6368; font-size: 12.5px; cursor: pointer; }
+  .dropzone.over { border-color: #1a73e8; background: #f0f4f9; color: #1a73e8; }
+  .param-table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+  .param-table td { padding: 3px; }
+  .param-table input { padding: 5px; font-size: 12px; }
+  .param-table .del { width: 28px; text-align: center; cursor: pointer; color: #d93025;
+    font-size: 15px; }
+  .re-out { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; background: #f8f9fa;
+    border: 1px solid #dadce0; border-radius: 6px; padding: 8px; min-height: 40px; }
+  .re-out mark { background: #fdd663; border-radius: 2px; }
+  .diff-out { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; border: 1px solid #dadce0;
+    border-radius: 6px; padding: 6px; min-height: 40px; max-height: 220px; overflow-y: auto; }
+  .diff-del { background: #fce8e6; color: #a50e0e; display: block; }
+  .diff-add { background: #e6f4ea; color: #137333; display: block; }
+  .diff-same { color: #5f6368; display: block; }
+  .chain-step { display: flex; gap: 6px; align-items: center; margin: 6px 0;
+    padding: 6px; border: 1px solid #e8eaed; border-radius: 6px; background: #f8f9fa; }
+  .chain-step .step-no { color: #5f6368; font-size: 12px; width: 18px; flex-shrink: 0; }
+  .chain-step select { flex: 1; }
+  .chain-step .arrow { color: #5f6368; font-size: 13px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #202124; color: #e8eaed; }
+    .tabs { background: #303134; border-bottom-color: #5f6368; }
+    .tab-btn { color: #9aa0a6; }
+    .tab-btn:hover { color: #e8eaed; }
+    .tab-btn.on { color: #8ab4f8; border-bottom-color: #8ab4f8; }
+    textarea, input[type="text"], input[type="password"], input[type="number"], select {
+      background: #17181a; border-color: #5f6368; color: #e8eaed; }
+    #codecOutput, #aesOutput { background: #17181a; }
+    button { background: #3c4043; border-color: #5f6368; color: #8ab4f8; }
+    button:hover { background: #5f6368; }
+    button:disabled:hover { background: #3c4043; }
+    button.primary { background: #8ab4f8; border-color: #8ab4f8; color: #202124; }
+    button.primary:hover { background: #aecbfa; }
+    button.danger { color: #f28b82; }
+    .error { color: #f28b82; }
+    .meta, .hint, .hash-row label { color: #9aa0a6; }
+    .hint { border-top-color: #5f6368; }
+    kbd { background: #3c4043; border-color: #5f6368; }
+    #codecImg, #qrImg { background: #fff; border-color: #5f6368; }
+    .batch-row, .hist-item { border-bottom-color: #3c4043; }
+    .batch-no { color: #9aa0a6; }
+    .batch-out.err { color: #f28b82; }
+    .hist-head { color: #9aa0a6; }
+    .hist-badge { background: #1a2b45; color: #8ab4f8; }
+    .hist-text.dim { color: #9aa0a6; }
+    .empty { color: #9aa0a6; }
+    .fav-on { color: #fdd663 !important; border-color: #fdd663 !important; }
+    .dropzone { border-color: #5f6368; color: #9aa0a6; }
+    .dropzone.over { border-color: #8ab4f8; background: #1a2b45; color: #8ab4f8; }
+    .param-table .del { color: #f28b82; }
+    .re-out { background: #17181a; border-color: #5f6368; }
+    .re-out mark { background: #7a5c00; color: #fff; }
+    .diff-out { border-color: #5f6368; }
+    .diff-del { background: #5c2b29; color: #f5c6c2; }
+    .diff-add { background: #1e3a2a; color: #a8e6a1; }
+    .diff-same { color: #9aa0a6; }
+    .chain-step { border-color: #5f6368; background: #303134; }
+    .chain-step .step-no, .chain-step .arrow { color: #9aa0a6; }
+  }
 </style>
 </head>
 <body>
@@ -70,6 +136,8 @@
     <button class="tab-btn on" data-tab="codec">编解码</button>
     <button class="tab-btn" data-tab="batch">批量</button>
     <button class="tab-btn" data-tab="tools">工具</button>
+    <button class="tab-btn" data-tab="dev">开发</button>
+    <button class="tab-btn" data-tab="chain">链</button>
     <button class="tab-btn" data-tab="history">历史</button>
   </div>
 
@@ -83,6 +151,13 @@
         <option value="base62">Base62</option>
         <option value="base85">Base85</option>
         <option value="base91">Base91</option>
+        <option value="base122">Base122</option>
+        <option value="base32768">Base32768</option>
+        <option value="base45">Base45</option>
+        <option value="qp">Quoted-Printable</option>
+        <option value="punycode">Punycode</option>
+        <option value="gzip64">gzip+Base64</option>
+        <option value="deflate64">deflate+Base64</option>
         <option value="hex">Hex</option>
         <option value="binary">二进制</option>
         <option value="octal">八进制</option>
@@ -120,6 +195,16 @@
       <button id="clearScanBtn">清除高亮</button>
       <span class="meta" id="scanStatus" style="margin:0"></span>
     </div>
+    <div class="row">
+      <button id="qrGenBtn">生成二维码</button>
+      <button id="qrScanBtn">识别页面二维码</button>
+      <span class="meta" id="qrStatus" style="margin:0"></span>
+    </div>
+    <div class="meta" id="clipNote"></div>
+    <img id="qrImg" alt="生成的二维码">
+    <div class="row" id="qrDlRow" style="display:none">
+      <button id="qrDlBtn">下载二维码</button>
+    </div>
     <p class="hint">在任意网页上用鼠标选中编码文本后，选区旁会直接出现「解码 / 编码」按钮；也可以右键 →「智能解码」，或按 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>D</kbd> 解码、<kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 编码。JWT 签名与验证在「工具」页。</p>
   </div>
 
@@ -144,7 +229,14 @@
     <div class="hash-row"><label>SHA-384</label><input type="text" id="hashSha384" readonly><button class="small" data-copy="hashSha384">复制</button></div>
     <div class="hash-row"><label>SHA-512</label><input type="text" id="hashSha512" readonly><button class="small" data-copy="hashSha512">复制</button></div>
     <div class="hash-row"><label>SHA3-256</label><input type="text" id="hashSha3" readonly><button class="small" data-copy="hashSha3">复制</button></div>
+    <div class="hash-row"><label>RIPEMD-160</label><input type="text" id="hashRipemd" readonly><button class="small" data-copy="hashRipemd">复制</button></div>
+    <div class="hash-row"><label>SM3</label><input type="text" id="hashSm3" readonly><button class="small" data-copy="hashSm3">复制</button></div>
     <div class="hash-row"><label>CRC32</label><input type="text" id="hashCrc32" readonly><button class="small" data-copy="hashCrc32">复制</button></div>
+
+    <div class="section">文件哈希</div>
+    <div class="dropzone" id="fileDrop">把文件拖到这里，或点击选择文件</div>
+    <input type="file" id="fileInput" style="display:none">
+    <div class="meta" id="fileMeta"></div>
 
     <div class="section">HMAC（消息认证码）</div>
     <input type="text" id="hmacKey" placeholder="密钥" spellcheck="false">
@@ -160,6 +252,11 @@
         <option value="GCM">AES-256-GCM（口令派生）</option>
         <option value="CBC">AES-256-CBC（口令派生）</option>
         <option value="CTR">AES-256-CTR（口令派生）</option>
+        <option value="3DES-ECB">TripleDES-ECB（口令派生）</option>
+        <option value="3DES-CBC">TripleDES-CBC（口令派生）</option>
+        <option value="CHACHA">ChaCha20-Poly1305（口令派生）</option>
+        <option value="SM4-ECB">国密 SM4-ECB（口令派生）</option>
+        <option value="SM4-CBC">国密 SM4-CBC（口令派生）</option>
         <option value="RC4">RC4（密钥直接使用）</option>
         <option value="XOR">XOR（密钥直接使用）</option>
       </select>
@@ -174,7 +271,56 @@
     <div class="error" id="aesError"></div>
     <textarea id="aesOutput" readonly placeholder="结果会显示在这里" spellcheck="false"></textarea>
     <div class="row"><button id="aesCopyBtn">复制结果</button></div>
-    <div class="hint" style="margin-top:6px">AES 密文自带 AES-GCM:v1: / AES-CBC:v1: / AES-CTR:v1: 前缀，解密时自动识别模式；RC4 与 XOR 输出十六进制密文，密钥不做派生。</div>
+    <div class="hint" style="margin-top:6px">AES / TripleDES / ChaCha20 / SM4 密文自带模式前缀（如 AES-GCM:v1:、3DES-CBC:v1:、CHACHA:v1:、SM4-ECB:v1:），解密时按前缀自动识别模式；RC4 与 XOR 输出十六进制密文，密钥不做派生。</div>
+
+    <div class="section">RSA 密钥对（RSA-OAEP 2048）</div>
+    <div class="row"><button id="rsaGenBtn" class="primary">生成密钥对</button></div>
+    <textarea id="rsaPub" placeholder="公钥（PEM）" spellcheck="false" style="height:64px"></textarea>
+    <div style="height:8px"></div>
+    <textarea id="rsaPriv" placeholder="私钥（PEM，仅保存在本页，不上传）" spellcheck="false" style="height:64px"></textarea>
+    <div style="height:8px"></div>
+    <textarea id="rsaInput" placeholder="要加密的明文，或要解密的 Base64 密文" spellcheck="false" style="height:56px"></textarea>
+    <div class="row">
+      <button id="rsaEncBtn">RSA 加密</button>
+      <button id="rsaDecBtn">RSA 解密</button>
+    </div>
+    <div class="error" id="rsaError"></div>
+    <textarea id="rsaOutput" readonly placeholder="结果会显示在这里" spellcheck="false" style="height:56px"></textarea>
+    <div class="row"><button id="rsaCopyBtn">复制结果</button></div>
+
+    <div class="section">ECDSA 签名（P-256 + SHA-256）</div>
+    <div class="row"><button id="ecdsaGenBtn" class="primary">生成密钥对</button></div>
+    <textarea id="ecdsaPub" placeholder="公钥（PEM）" spellcheck="false" style="height:56px"></textarea>
+    <div style="height:8px"></div>
+    <textarea id="ecdsaPriv" placeholder="私钥（PEM，仅保存在本页，不上传）" spellcheck="false" style="height:56px"></textarea>
+    <div style="height:8px"></div>
+    <input type="text" id="ecdsaInput" placeholder="要签名或验证的消息" spellcheck="false">
+    <div class="row">
+      <button id="ecdsaSignBtn">签名</button>
+      <button id="ecdsaVerifyBtn">验证签名</button>
+    </div>
+    <div class="error" id="ecdsaError"></div>
+    <div class="meta" id="ecdsaMeta"></div>
+    <textarea id="ecdsaOutput" placeholder="签名（十六进制）会显示在这里；验证时请把签名粘贴到这里再点「验证签名」" spellcheck="false" style="height:56px"></textarea>
+    <div class="row"><button id="ecdsaCopyBtn">复制结果</button></div>
+
+    <div class="section">国密 SM2（加密 / 签名）</div>
+    <div class="row"><button id="sm2GenBtn" class="primary">生成密钥对</button></div>
+    <input type="text" id="sm2Pub" placeholder="公钥（130 位十六进制，04 开头）" spellcheck="false">
+    <div style="height:8px"></div>
+    <input type="text" id="sm2Priv" placeholder="私钥（64 位十六进制，仅保存在本页，不上传）" spellcheck="false">
+    <div style="height:8px"></div>
+    <textarea id="sm2Input" placeholder="要加密/解密/签名/验证的文本（解密时粘贴十六进制密文）" spellcheck="false" style="height:56px"></textarea>
+    <div class="row">
+      <button id="sm2EncBtn">SM2 加密</button>
+      <button id="sm2DecBtn">SM2 解密</button>
+      <button id="sm2SignBtn">SM2 签名</button>
+      <button id="sm2VerifyBtn">验证签名</button>
+    </div>
+    <div class="error" id="sm2Error"></div>
+    <div class="meta" id="sm2Meta"></div>
+    <textarea id="sm2Output" placeholder="结果会显示在这里；验证签名时请把签名粘贴到这里再点「验证签名」" spellcheck="false" style="height:56px"></textarea>
+    <div class="row"><button id="sm2CopyBtn">复制结果</button></div>
 
     <div class="section">JWT 签名与验证（HS256）</div>
     <textarea id="jwtHeader" placeholder="Header JSON" spellcheck="false" style="height:44px">{"alg":"HS256","typ":"JWT"}</textarea>
@@ -222,18 +368,103 @@
     <div class="hash-row"><label>本地时间</label><input type="text" id="tsLocal" readonly><button class="small" data-copy="tsLocal">复制</button></div>
   </div>
 
+  <div class="panel" id="tab-dev">
+    <div class="section">JSON 工具</div>
+    <textarea id="jsonInput" placeholder="在此粘贴 JSON…" spellcheck="false" style="height:90px"></textarea>
+    <div class="row">
+      <button id="jsonFormatBtn" class="primary">格式化</button>
+      <button id="jsonMinifyBtn">压缩</button>
+      <button id="jsonValidateBtn">校验</button>
+      <button id="jsonYamlBtn">转 YAML</button>
+    </div>
+    <div class="error" id="jsonError"></div>
+    <div class="meta" id="jsonMeta"></div>
+    <textarea id="jsonOutput" readonly placeholder="结果会显示在这里" spellcheck="false" style="height:120px"></textarea>
+    <div class="row"><button id="jsonCopyBtn">复制结果</button></div>
+
+    <div class="section">URL 参数解析</div>
+    <input type="text" id="urlInput" placeholder="粘贴完整 URL，如 https://example.com/?a=1&b=2" spellcheck="false">
+    <div class="row">
+      <button id="urlParseBtn" class="primary">解析参数</button>
+      <button id="urlAddParamBtn">添加一行</button>
+    </div>
+    <div class="error" id="urlError"></div>
+    <table class="param-table" id="urlParamsTable" style="display:none">
+      <tbody id="urlParamsBody"></tbody>
+    </table>
+    <div class="row">
+      <button id="urlBuildBtn">拼回 URL</button>
+    </div>
+    <input type="text" id="urlOutput" readonly placeholder="拼回的 URL 会显示在这里" spellcheck="false">
+    <div class="row"><button id="urlCopyBtn">复制结果</button></div>
+
+    <div class="section">正则测试</div>
+    <div class="row">
+      <input type="text" id="rePattern" placeholder="正则表达式，如 \d{4}-\d{2}-\d{2}" spellcheck="false" style="flex:1">
+      <input type="text" id="reFlags" value="g" placeholder="标志" spellcheck="false" style="width:56px">
+    </div>
+    <textarea id="reText" placeholder="在此粘贴要测试的文本…" spellcheck="false" style="height:70px"></textarea>
+    <div class="row"><button id="reTestBtn" class="primary">测试</button></div>
+    <div class="error" id="reError"></div>
+    <div class="meta" id="reMeta"></div>
+    <div class="re-out" id="reOutput">匹配结果会高亮显示在这里</div>
+
+    <div class="section">文本对比</div>
+    <textarea id="diffA" placeholder="原文（每行一条）" spellcheck="false" style="height:80px"></textarea>
+    <div style="height:8px"></div>
+    <textarea id="diffB" placeholder="新文本（每行一条）" spellcheck="false" style="height:80px"></textarea>
+    <div class="row"><button id="diffBtn" class="primary">对比</button></div>
+    <div class="meta" id="diffMeta"></div>
+    <div class="diff-out" id="diffOutput">对比结果会显示在这里：红色为删除行，绿色为新增行</div>
+  </div>
+
+  <div class="panel" id="tab-chain">
+    <div class="section">编解码链</div>
+    <div class="meta" style="margin-top:0">把多个编解码步骤串起来一键执行，例如：URL 解码 → Base64 解码 → gunzip 解压。</div>
+    <div id="chainSteps"></div>
+    <div class="row">
+      <button id="chainAddBtn">添加步骤</button>
+      <button id="chainClearBtn">清空步骤</button>
+    </div>
+    <div class="row">
+      <input type="text" id="recipeName" placeholder="配方名称" spellcheck="false" style="flex:1">
+      <button id="recipeSaveBtn">保存为配方</button>
+    </div>
+    <div class="row">
+      <select id="recipeSelect" style="flex:1"><option value="">选择已保存的配方…</option></select>
+      <button id="recipeLoadBtn">加载</button>
+      <button id="recipeDelBtn" class="danger">删除</button>
+    </div>
+    <textarea id="chainInput" placeholder="在此粘贴要处理的文本…" spellcheck="false" style="height:80px"></textarea>
+    <div class="row">
+      <button id="chainRunBtn" class="primary">执行链</button>
+      <button id="chainCopyBtn">复制结果</button>
+    </div>
+    <div class="error" id="chainError"></div>
+    <div class="meta" id="chainMeta"></div>
+    <textarea id="chainOutput" readonly placeholder="结果会显示在这里" spellcheck="false" style="height:100px"></textarea>
+  </div>
+
   <div class="panel" id="tab-history">
     <div class="row">
       <input type="text" id="histSearch" placeholder="搜索历史记录…" spellcheck="false" style="flex:1">
+      <select id="histFilter" style="width:110px">
+        <option value="">全部格式</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="histExportJsonBtn">导出 JSON</button>
+      <button id="histExportTextBtn">导出文本</button>
       <button id="histClearBtn" class="danger">清空历史</button>
     </div>
-    <div class="meta">只保存在本机浏览器内（最近 50 条），不上传。</div>
+    <div class="meta">只保存在本机浏览器内（最近 50 条），不上传。收藏的条目会置顶显示。</div>
     <div id="histList"></div>
   </div>
 
   <script src="codec.js"></script>
   <script src="cryptools.js"></script>
   <script src="store.js"></script>
+  <script src="lib/qrcode.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

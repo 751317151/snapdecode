@@ -34,6 +34,9 @@
     } else if (msg.action === 'scan-page') {
       var n = scanPage();
       sendResponse({ received: true, count: n });
+    } else if (msg.action === 'scan-qr') {
+      var nQr = scanQrImages();
+      sendResponse({ received: true, count: nQr });
     } else if (msg.action === 'clear-scan') {
       clearScan();
       sendResponse({ received: true });
@@ -73,7 +76,7 @@
     var result = B64Codec.smartDecode(input);
     B64Codec.enhanceDecoded(result).then(function (enhanced) {
       session = { mode: 'decode', input: input, format: 'auto',
-                  result: enhanced, stack: [enhanced], jsonPretty: true, imageUrl: null };
+                  result: enhanced, stack: [enhanced], jsonPretty: true, imageUrl: null, qr: null };
       showPanel(rect);
       saveHistory(session);
     });
@@ -90,7 +93,7 @@
                  byteLength: encoded.length, bytes: null, format: 'base64' };
     }
     session = { mode: 'encode', input: input, format: 'base64',
-                result: result, stack: [result], jsonPretty: true, imageUrl: null };
+                result: result, stack: [result], jsonPretty: true, imageUrl: null, qr: null };
     showPanel(rect);
     saveHistory(session);
   }
@@ -100,7 +103,10 @@
     var result = fmt === 'auto'
       ? B64Codec.smartDecode(session.input)
       : B64Codec.decodeAs(session.input, fmt);
-    B64Codec.enhanceDecoded(result).then(function (enhanced) {
+    // decodeAs may return a Promise for async formats (gzip/deflate)
+    Promise.resolve(result).then(function (r) {
+      return B64Codec.enhanceDecoded(r);
+    }).then(function (enhanced) {
       session.format = fmt;
       session.result = enhanced;
       session.stack = [enhanced];
@@ -234,6 +240,8 @@
       title.textContent = '编码结果 · Base64';
     } else if (result.ok && result.kind === 'jwt') {
       title.textContent = 'JWT 解析';
+    } else if (result.ok && result.kind === 'qrscan') {
+      title.textContent = '页面二维码扫描';
     } else if (result.ok && result.kind === 'multiple') {
       title.textContent = '找到多处可解码内容';
     } else if (result.ok) {
@@ -257,9 +265,10 @@
     if (session.mode === 'decode' && result.kind !== 'multiple') {
       var sw = el('div', 'b64d-switch');
       var formats = [['auto', '自动'], ['base64', 'Base64'], ['base32', 'Base32'],
-                     ['base58', 'Base58'], ['hex', 'Hex'], ['binary', '二进制'],
-                     ['url', 'URL'], ['unicode', 'Unicode'], ['html', 'HTML'],
-                     ['morse', '摩斯'], ['jwt', 'JWT']];
+                     ['base58', 'Base58'], ['base45', 'Base45'], ['hex', 'Hex'],
+                     ['binary', '二进制'], ['url', 'URL'], ['unicode', 'Unicode'],
+                     ['html', 'HTML'], ['morse', '摩斯'], ['qp', 'QP'],
+                     ['punycode', 'Punycode'], ['jwt', 'JWT']];
       formats.forEach(function (f) {
         var b = el('button', 'b64d-sw' + (session.format === f[0] ? ' b64d-sw-on' : ''), f[1]);
         b.addEventListener('click', function () { forceFormat(f[0]); });
@@ -292,8 +301,11 @@
       });
     } else if (result.kind === 'jwt') {
       renderJwt(body, result);
+    } else if (result.kind === 'qrscan') {
+      renderQrScan(body, result);
     } else {
       renderTextResult(body, result);
+      renderQrSection(body, result);
     }
     panel.appendChild(body);
 
@@ -309,6 +321,13 @@
         var dlBtn = el('button', 'b64d-btn', '下载图片');
         dlBtn.addEventListener('click', function () { downloadImage(result); });
         foot.appendChild(dlBtn);
+      }
+      if (result.kind === 'text' && typeof qrcode !== 'undefined') {
+        var qrBtn = el('button', 'b64d-btn',
+          session.qr && session.qr.text === result.text ? '隐藏二维码' : '二维码');
+        qrBtn.title = '把结果生成二维码';
+        qrBtn.addEventListener('click', toggleQr);
+        foot.appendChild(qrBtn);
       }
       if (result.kind === 'text' && looksDecodableAgain(result.text)) {
         var againBtn = el('button', 'b64d-btn', '再次解码');
@@ -427,6 +446,162 @@
     a.remove();
   }
 
+  // ---------------- QR code ----------------
+  // Uses the vendored libs (lib/qrcode.js, lib/jsqr.js); both are guarded
+  // with typeof checks so the panel still works when a lib is missing.
+
+  var QR_SCAN_MAX = 50; // max images examined per scan (page safety bound)
+  var QR_SCAN_MAX_SIDE = 1200; // images are downscaled to this side for jsQR
+
+  function makeQrDataUrl(text) {
+    // qrcode-generator defaults to a latin1 byte conversion; switch to
+    // UTF-8 so non-ASCII text survives the round trip.
+    if (typeof qrcode !== 'undefined' && qrcode.stringToBytesFuncs &&
+        qrcode.stringToBytesFuncs['UTF-8']) {
+      qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+    }
+    var qr = qrcode(0, 'M'); // type number 0 = auto-detect
+    qr.addData(text);
+    qr.make();
+    return qr.createDataURL(4, 16);
+  }
+
+  function toggleQr() {
+    if (!session || !session.result || session.result.kind !== 'text') return;
+    var text = session.result.text;
+    if (session.qr && session.qr.text === text) {
+      session.qr = null;
+      renderPanel();
+      return;
+    }
+    try {
+      session.qr = { text: text, dataUrl: makeQrDataUrl(text) };
+    } catch (e) {
+      session.qr = { text: text, error: '内容过长或无法生成二维码' };
+    }
+    renderPanel();
+  }
+
+  function downloadQr(dataUrl) {
+    var a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = 'qrcode.gif'; // qrcode-generator renders GIF data URLs
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  function renderQrSection(body, result) {
+    if (!session.qr || session.qr.text !== result.text) return;
+    var wrap = el('div', 'b64d-qr');
+    if (session.qr.error) {
+      wrap.appendChild(el('div', 'b64d-hint', session.qr.error));
+    } else {
+      var img = document.createElement('img');
+      img.className = 'b64d-qr-img';
+      img.alt = '结果的二维码';
+      img.src = session.qr.dataUrl;
+      wrap.appendChild(img);
+      var dl = el('button', 'b64d-btn', '下载二维码');
+      dl.addEventListener('click', function () { downloadQr(session.qr.dataUrl); });
+      wrap.appendChild(dl);
+    }
+    body.appendChild(wrap);
+  }
+
+  function describeQrImage(img, index) {
+    var alt = (img.getAttribute('alt') || '').trim();
+    if (alt) return '图片 ' + (index + 1) + ' · ' + truncate(alt, 24);
+    var src = img.getAttribute('src') || img.currentSrc || '';
+    var file = src.split('/').pop().split(/[?#]/)[0];
+    if (file) return '图片 ' + (index + 1) + ' · ' + truncate(file, 28);
+    return '图片 ' + (index + 1);
+  }
+
+  // Scan every <img> on the page with jsQR and show what was found in the
+  // panel. Cross-origin images taint the canvas (drawImage/getImageData
+  // throws) and unloaded/broken images are skipped; both are counted.
+  // Returns the number of distinct QR contents found.
+  function scanQrImages() {
+    if (typeof jsQR === 'undefined') {
+      session = { mode: 'qrscan', input: '', format: 'auto',
+                  result: { ok: false, kind: 'error', error: '二维码解码库（jsQR）未加载，无法扫描页面图片', format: null },
+                  stack: [], jsonPretty: true, imageUrl: null, qr: null };
+      showPanel(null);
+      return 0;
+    }
+    var imgs = document.querySelectorAll('img');
+    var items = [];
+    var seen = {};
+    var total = imgs.length;
+    var processed = 0, scanned = 0, skippedCors = 0, skippedLoad = 0, capped = false;
+    for (var i = 0; i < imgs.length; i++) {
+      if (processed >= QR_SCAN_MAX) { capped = true; break; }
+      processed++;
+      var img = imgs[i];
+      if (!img.complete || !img.naturalWidth || !img.naturalHeight) { skippedLoad++; continue; }
+      var w = img.naturalWidth, h = img.naturalHeight;
+      var scale = Math.min(1, QR_SCAN_MAX_SIDE / Math.max(w, h));
+      var dw = Math.max(1, Math.round(w * scale));
+      var dh = Math.max(1, Math.round(h * scale));
+      var canvas = document.createElement('canvas');
+      canvas.width = dw;
+      canvas.height = dh;
+      var ctx = canvas.getContext('2d');
+      if (!ctx) { skippedLoad++; continue; }
+      var data;
+      try {
+        ctx.drawImage(img, 0, 0, dw, dh);
+        data = ctx.getImageData(0, 0, dw, dh);
+      } catch (e) {
+        skippedCors++; // cross-origin image taints the canvas
+        continue;
+      }
+      scanned++;
+      var code = null;
+      try {
+        code = jsQR(data.data, dw, dh);
+      } catch (e) { /* treat as no code */ }
+      if (code && code.data && !seen[code.data]) {
+        seen[code.data] = true;
+        items.push({ desc: describeQrImage(img, i), text: code.data });
+      }
+    }
+    var text = items.map(function (it) { return it.text; }).join('\n');
+    session = { mode: 'qrscan', input: '', format: 'auto',
+                result: { ok: true, kind: 'qrscan', text: text,
+                          items: items, total: total, processed: processed, scanned: scanned,
+                          skippedCors: skippedCors, skippedLoad: skippedLoad,
+                          capped: capped, byteLength: text.length, bytes: null, format: null },
+                stack: [], jsonPretty: true, imageUrl: null, qr: null };
+    showPanel(null);
+    return items.length;
+  }
+
+  function renderQrScan(body, result) {
+    var metaParts = [];
+    metaParts.push('共 ' + result.total + ' 张图片');
+    if (result.capped) metaParts.push('仅检查前 ' + result.processed + ' 张');
+    metaParts.push('扫描 ' + result.scanned + ' 张');
+    if (result.skippedCors) metaParts.push('跨域跳过 ' + result.skippedCors + ' 张');
+    if (result.skippedLoad) metaParts.push('加载失败跳过 ' + result.skippedLoad + ' 张');
+    body.appendChild(el('div', 'b64d-meta', metaParts.join(' · ')));
+    if (!result.items.length) {
+      body.appendChild(el('div', 'b64d-hint', '没有在页面图片中识别出二维码。'));
+      return;
+    }
+    body.appendChild(el('div', 'b64d-meta', '识别出 ' + result.items.length + ' 个二维码：'));
+    result.items.forEach(function (it) {
+      var row = el('div', 'b64d-qr-row');
+      row.appendChild(el('div', 'b64d-qr-desc', it.desc));
+      row.appendChild(el('div', 'b64d-qr-text', it.text));
+      var btn = el('button', 'b64d-btn', '复制');
+      btn.addEventListener('click', function () { copyText(it.text, btn); });
+      row.appendChild(btn);
+      body.appendChild(row);
+    });
+  }
+
   function positionPanel(host, panel, rect) {
     var w = panel.offsetWidth;
     var h = panel.offsetHeight;
@@ -537,6 +712,14 @@
       '  font-size:12px;word-break:break-all;color:#e8eaed;}',
       '.b64d-img{display:block;max-width:100%;max-height:260px;margin:0 auto 8px;',
       '  border-radius:6px;border:1px solid #5f6368;background:#fff;}',
+      '.b64d-qr{margin-top:10px;padding-top:10px;border-top:1px solid #3c4043;text-align:center;}',
+      '.b64d-qr-img{display:block;max-width:100%;margin:0 auto 8px;',
+      '  border-radius:6px;border:1px solid #5f6368;background:#fff;}',
+      '.b64d-qr-row{padding:8px 0;border-bottom:1px solid #3c4043;}',
+      '.b64d-qr-row:last-child{border-bottom:none;}',
+      '.b64d-qr-desc{font-size:12px;color:#8ab4f8;margin-bottom:2px;}',
+      '.b64d-qr-text{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;',
+      '  word-break:break-all;color:#e8eaed;margin-bottom:6px;white-space:pre-wrap;}',
       '.b64d-json-toggle{margin-bottom:6px;}',
       '.b64d-foot{display:flex;gap:8px;justify-content:flex-end;padding:9px 12px;',
       '  border-top:1px solid #5f6368;background:#303134;}',

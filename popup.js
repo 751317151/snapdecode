@@ -1,5 +1,7 @@
-// Popup logic v3: tabbed tool — codec (decode/encode + page scan),
-// batch decode, hash/HMAC/cipher/JWT/generator tools, local history.
+// Popup logic v4: tabbed tool — codec (decode/encode + page scan + QR),
+// batch decode, hash/HMAC/cipher/JWT/RSA/ECDSA/SM2 tools, file hash,
+// dev tools (JSON/URL/regex/diff), codec-chain pipeline with recipes,
+// local history with favorites, format filter and export.
 'use strict';
 
 var $ = function (id) { return document.getElementById(id);};
@@ -129,7 +131,8 @@ function doCodecDecode() {
 var input = $('codecInput').value;
 var fmt = $('formatSelect').value;
 var result = fmt === 'auto'? B64Codec.smartDecode(input): B64Codec.decodeAs(input, fmt, codecOpts());
-B64Codec.enhanceDecoded(result).then(function (enhanced) {
+// gzip64 / deflate64 decode asynchronously — normalize with Promise.resolve
+Promise.resolve(result).then(function (r) { return B64Codec.enhanceDecoded(r); }).then(function (enhanced) {
 setCodecOutput(enhanced);
 saveCodecHistory('decode', input, enhanced);
 });
@@ -152,10 +155,13 @@ if (encoded == null) {
 $('codecError').textContent = '这种格式无法直接编码';
 return;
 }
-setCodecOutput({ ok: true, kind: 'text', text: encoded, encoding: 'UTF-8',
-byteLength: encoded.length, bytes: null, format: format });
+// gzip64 / deflate64 encode asynchronously — normalize with Promise.resolve
+Promise.resolve(encoded).then(function (str) {
+setCodecOutput({ ok: true, kind: 'text', text: str, encoding: 'UTF-8',
+byteLength: str.length, bytes: null, format: format });
 saveCodecHistory('encode', input,
-{ ok: true, kind: 'text', text: encoded, format: format });
+{ ok: true, kind: 'text', text: str, format: format });
+});
 }
 
 // Keep the encode button label in sync with the selected format.
@@ -170,6 +176,13 @@ case 'base58': btn.textContent = '编码为 Base58'; break;
 case 'base62': btn.textContent = '编码为 Base62'; break;
 case 'base85': btn.textContent = '编码为 Base85'; break;
 case 'base91': btn.textContent = '编码为 Base91'; break;
+case 'base122': btn.textContent = '编码为 Base122'; break;
+case 'base32768': btn.textContent = '编码为 Base32768'; break;
+case 'base45': btn.textContent = '编码为 Base45'; break;
+case 'qp': btn.textContent = '编码为 Quoted-Printable'; break;
+case 'punycode': btn.textContent = '编码为 Punycode'; break;
+case 'gzip64': btn.textContent = '编码为 gzip+Base64'; break;
+case 'deflate64': btn.textContent = '编码为 deflate+Base64'; break;
 case 'hex': btn.textContent = '编码为 Hex'; break;
 case 'binary': btn.textContent = '编码为二进制'; break;
 case 'octal': btn.textContent = '编码为八进制'; break;
@@ -243,7 +256,7 @@ return new Promise(function (resolve, reject) {
 chrome.tabs.sendMessage(tabId, { action: action}, function (res) {
 if (chrome.runtime.lastError) {
 chrome.scripting.executeScript(
-{ target: { tabId: tabId}, files: ['codec.js', 'store.js', 'content.js']},
+{ target: { tabId: tabId}, files: ['codec.js', 'store.js', 'lib/qrcode.js', 'lib/jsqr.js', 'content.js']},
 function () {
 if (chrome.runtime.lastError) {
 reject(new Error('该页面不支持（如 chrome:// 页面）'));
@@ -350,6 +363,8 @@ $('hashBtn').addEventListener('click', function () {
 var text = $('hashInput').value;
 $('hashMd5').value = B64Crypto.md5(text);
 $('hashSha3').value = B64Crypto.sha3_256(text);
+$('hashRipemd').value = B64Crypto.ripemd160(text);
+$('hashSm3').value = B64Crypto.sm3(text);
 $('hashCrc32').value = B64Crypto.crc32(text);
 $('hashSha1').value = '计算中…';
 $('hashSha256').value = '计算中…';
@@ -396,7 +411,17 @@ $('aesError').textContent = err.message;
 }
 return;
 }
-B64Crypto.aesEncrypt($('aesInput').value, pass, mode).then(function (ct) {
+var p;
+if (mode === '3DES-ECB' || mode === '3DES-CBC') {
+p = Promise.resolve(B64Crypto.tripleDesEncrypt($('aesInput').value, pass, mode.slice(5)));
+} else if (mode === 'CHACHA') {
+p = Promise.resolve(B64Crypto.chachaEncrypt($('aesInput').value, pass));
+} else if (mode === 'SM4-ECB' || mode === 'SM4-CBC') {
+p = Promise.resolve(B64Crypto.sm4Encrypt($('aesInput').value, pass, mode.slice(4)));
+} else {
+p = B64Crypto.aesEncrypt($('aesInput').value, pass, mode);
+}
+p.then(function (ct) {
 $('aesOutput').value = ct;
 }).catch(function (err) {
 $('aesError').textContent = err.message;
@@ -417,8 +442,19 @@ $('aesOutput').value = '';
 }
 return;
 }
-// AES 解密按密文前缀自动识别 GCM / CBC / CTR
-B64Crypto.aesDecrypt($('aesInput').value, pass).then(function (pt) {
+// 解密按密文前缀自动识别算法与模式
+var ct = $('aesInput').value.trim();
+var dp;
+if (ct.indexOf('3DES-') === 0) {
+dp = Promise.resolve(B64Crypto.tripleDesDecrypt(ct, pass));
+} else if (ct.indexOf('CHACHA:') === 0) {
+dp = Promise.resolve(B64Crypto.chachaDecrypt(ct, pass));
+} else if (ct.indexOf('SM4-') === 0) {
+dp = Promise.resolve(B64Crypto.sm4Decrypt(ct, pass));
+} else {
+dp = B64Crypto.aesDecrypt(ct, pass);
+}
+dp.then(function (pt) {
 $('aesOutput').value = pt;
 }).catch(function (err) {
 $('aesError').textContent = err.message;
@@ -498,14 +534,17 @@ renderTsResult(B64Crypto.dateToTimestamp($('tsInput').value));
 
 function renderHistory() {
 var q = $('histSearch').value.trim().toLowerCase();
+var fmtFilter = $('histFilter').value;
 B64Store.list().then(function (list) {
 var box = $('histList');
 box.innerHTML = '';
-var filtered = q
-? list.filter(function (e) {
-return (e.input + '\n' + e.output).toLowerCase().indexOf(q)!== -1;
-})
-: list;
+var filtered = list.filter(function (e) {
+if (fmtFilter && e.format !== fmtFilter) return false;
+if (q && (e.input + '\n' + e.output).toLowerCase().indexOf(q) === -1) return false;
+return true;
+});
+// favorites (pinned) first, otherwise newest first (storage order)
+filtered.sort(function (a, b) { return (b.fav ? 1 : 0) - (a.fav ? 1 : 0); });
 if (!filtered.length) {
 var empty = document.createElement('div');
 empty.className = 'empty';
@@ -531,7 +570,14 @@ del.textContent = '删除';
 del.addEventListener('click', function () {
 B64Store.remove(entry.ts).then(renderHistory);
 });
+var fav = document.createElement('button');
+fav.className = 'small' + (entry.fav ? ' fav-on' : '');
+fav.textContent = entry.fav ? '★ 已收藏' : '☆ 收藏';
+fav.addEventListener('click', function () {
+B64Store.toggleFav(entry.ts).then(renderHistory);
+});
 head.appendChild(left);
+head.appendChild(fav);
 head.appendChild(del);
 item.appendChild(head);
 var inputEl = document.createElement('div');
@@ -571,3 +617,793 @@ B64Store.clear().then(renderHistory);
 });
 
 $('codecInput').focus();
+
+// ---------------- QR code (codec tab) ----------------
+
+var qrDataUrl = null;
+
+$('qrGenBtn').addEventListener('click', function () {
+  var text = $('codecOutput').value || $('codecInput').value;
+  var status = $('qrStatus');
+  var img = $('qrImg');
+  if (!text) {
+    status.textContent = '没有可生成二维码的内容（先解码/编码，或在输入框里粘贴文本）';
+    return;
+  }
+  if (typeof qrcode === 'undefined') {
+    status.textContent = '二维码库未加载';
+    return;
+  }
+  try {
+    // qrcode-generator defaults to a latin1 byte conversion; switch to
+    // its built-in UTF-8 encoder first, otherwise Chinese text breaks.
+    if (qrcode.stringToBytesFuncs && qrcode.stringToBytesFuncs['UTF-8']) {
+      qrcode.stringToBytes = qrcode.stringToBytesFuncs['UTF-8'];
+    }
+    var qr = qrcode(0, 'M');
+    qr.addData(text);
+    qr.make();
+    qrDataUrl = qr.createDataURL(4, 8);
+    img.src = qrDataUrl;
+    img.style.display = 'block';
+    $('qrDlRow').style.display = '';
+    status.textContent = '已生成二维码（' + text.length + ' 字符）';
+  } catch (err) {
+    status.textContent = '生成失败：' + err.message;
+  }
+});
+
+$('qrDlBtn').addEventListener('click', function () {
+  if (!qrDataUrl) return;
+  var a = document.createElement('a');
+  a.href = qrDataUrl;
+  a.download = 'snapdecode-qrcode.gif'; // qrcode-generator renders GIF data URLs
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+});
+
+$('qrScanBtn').addEventListener('click', function () {
+  $('qrStatus').textContent = '正在识别页面图片里的二维码…';
+  sendToTab('scan-qr').then(function (res) {
+    $('qrStatus').textContent = res.count > 0
+      ? '已在页面图片里识别出 ' + res.count + ' 个二维码，结果显示在页面上'
+      : '页面图片里没有识别出二维码' + (res.skipped ? '（' + res.skipped + ' 张图片因跨域无法读取）' : '');
+  }).catch(function (err) {
+    $('qrStatus').textContent = err.message;
+  });
+});
+
+// ---------------- clipboard auto-decode on popup open ----------------
+
+(function clipboardAutoDecode() {
+  if (!navigator.clipboard || !navigator.clipboard.readText) return;
+  navigator.clipboard.readText().then(function (text) {
+    if (!text || !text.trim()) return;
+    if ($('codecInput').value) return;
+    // looksEncoded needs a 16+ char token; also accept short Base64 with
+    // '=' padding (e.g. 'aGVsbG8=') — plain words have no padding, and
+    // detectFormat alone is too eager ('helloworld' would match base64).
+    var t = text.trim();
+    var shortB64 = /=+$/.test(t) && B64Codec.detectFormat(t) === 'base64';
+    if (!B64Codec.looksEncoded(text) && !shortB64) return;
+    $('codecInput').value = text;
+    $('clipNote').textContent = '已从剪贴板自动填入并解码';
+    doCodecDecode();
+  }).catch(function () { /* clipboard permission denied or empty — ignore */ });
+})();
+
+// ---------------- file hash (tools tab) ----------------
+
+function fillHashRows(r) {
+  $('hashMd5').value = r['MD5'] || '';
+  $('hashSha1').value = r['SHA-1'] || '';
+  $('hashSha256').value = r['SHA-256'] || '';
+  $('hashSha384').value = r['SHA-384'] || '';
+  $('hashSha512').value = r['SHA-512'] || '';
+  $('hashSha3').value = r['SHA3-256'] || '';
+  $('hashRipemd').value = r['RIPEMD-160'] || '';
+  $('hashSm3').value = r['SM3'] || '';
+  $('hashCrc32').value = r['CRC32'] || '';
+}
+
+function handleHashFile(file) {
+  if (!file) return;
+  $('fileMeta').textContent = '正在计算：' + file.name + '（' + file.size + ' 字节）…';
+  file.arrayBuffer().then(function (buf) {
+    return B64Crypto.hashAllBytes(new Uint8Array(buf));
+  }).then(function (r) {
+    fillHashRows(r);
+    $('fileMeta').textContent = '已计算：' + file.name + '（' + file.size + ' 字节），结果已填入上方哈希栏';
+  }).catch(function (err) {
+    $('fileMeta').textContent = '计算失败：' + err.message;
+  });
+}
+
+$('fileDrop').addEventListener('click', function () { $('fileInput').click(); });
+$('fileInput').addEventListener('change', function () {
+  handleHashFile(this.files && this.files[0]);
+  this.value = '';
+});
+['dragenter', 'dragover'].forEach(function (ev) {
+  $('fileDrop').addEventListener(ev, function (e) {
+    e.preventDefault();
+    $('fileDrop').classList.add('over');
+  });
+});
+['dragleave', 'drop'].forEach(function (ev) {
+  $('fileDrop').addEventListener(ev, function (e) {
+    e.preventDefault();
+    $('fileDrop').classList.remove('over');
+  });
+});
+$('fileDrop').addEventListener('drop', function (e) {
+  var files = e.dataTransfer && e.dataTransfer.files;
+  if (files && files.length) handleHashFile(files[0]);
+});
+
+// ---------------- RSA / ECDSA / SM2 (tools tab) ----------------
+
+$('rsaGenBtn').addEventListener('click', function () {
+  $('rsaError').textContent = '';
+  B64Crypto.rsaGenerateKeyPair().then(function (kp) {
+    $('rsaPub').value = kp.publicKeyPem;
+    $('rsaPriv').value = kp.privateKeyPem;
+  }).catch(function (err) { $('rsaError').textContent = err.message; });
+});
+$('rsaEncBtn').addEventListener('click', function () {
+  $('rsaError').textContent = '';
+  B64Crypto.rsaEncrypt($('rsaPub').value, $('rsaInput').value).then(function (ct) {
+    $('rsaOutput').value = ct;
+  }).catch(function (err) { $('rsaError').textContent = err.message; });
+});
+$('rsaDecBtn').addEventListener('click', function () {
+  $('rsaError').textContent = '';
+  B64Crypto.rsaDecrypt($('rsaPriv').value, $('rsaInput').value).then(function (pt) {
+    $('rsaOutput').value = pt;
+  }).catch(function (err) { $('rsaError').textContent = err.message; $('rsaOutput').value = ''; });
+});
+$('rsaCopyBtn').addEventListener('click', function () {
+  copyValue($('rsaOutput').value, this);
+});
+
+$('ecdsaGenBtn').addEventListener('click', function () {
+  $('ecdsaError').textContent = '';
+  B64Crypto.ecdsaGenerateKeyPair().then(function (kp) {
+    $('ecdsaPub').value = kp.publicKeyPem;
+    $('ecdsaPriv').value = kp.privateKeyPem;
+  }).catch(function (err) { $('ecdsaError').textContent = err.message; });
+});
+$('ecdsaSignBtn').addEventListener('click', function () {
+  $('ecdsaError').textContent = '';
+  $('ecdsaMeta').textContent = '';
+  B64Crypto.ecdsaSign($('ecdsaPriv').value, $('ecdsaInput').value).then(function (sig) {
+    $('ecdsaOutput').value = sig;
+    $('ecdsaMeta').textContent = '已用 ECDSA P-256 签名';
+  }).catch(function (err) { $('ecdsaError').textContent = err.message; });
+});
+$('ecdsaVerifyBtn').addEventListener('click', function () {
+  $('ecdsaError').textContent = '';
+  $('ecdsaMeta').textContent = '';
+  B64Crypto.ecdsaVerify($('ecdsaPub').value, $('ecdsaInput').value, $('ecdsaOutput').value).then(function (ok) {
+    $('ecdsaMeta').textContent = ok ? '签名有效 ✓' : '签名无效 ✗（公钥不对、消息被改过或签名有误）';
+  }).catch(function (err) { $('ecdsaError').textContent = err.message; });
+});
+$('ecdsaCopyBtn').addEventListener('click', function () {
+  copyValue($('ecdsaOutput').value, this);
+});
+
+$('sm2GenBtn').addEventListener('click', function () {
+  $('sm2Error').textContent = '';
+  try {
+    var kp = B64Crypto.sm2GenerateKeyPair();
+    $('sm2Pub').value = kp.publicKeyHex;
+    $('sm2Priv').value = kp.privateKeyHex;
+  } catch (err) { $('sm2Error').textContent = err.message; }
+});
+function sm2Run(fn) {
+  $('sm2Error').textContent = '';
+  $('sm2Meta').textContent = '';
+  try {
+    return fn();
+  } catch (err) {
+    $('sm2Error').textContent = err.message;
+    return null;
+  }
+}
+$('sm2EncBtn').addEventListener('click', function () {
+  var out = sm2Run(function () {
+    return B64Crypto.sm2Encrypt($('sm2Pub').value, $('sm2Input').value);
+  });
+  if (out != null) $('sm2Output').value = out;
+});
+$('sm2DecBtn').addEventListener('click', function () {
+  var out = sm2Run(function () {
+    return B64Crypto.sm2Decrypt($('sm2Priv').value, $('sm2Input').value);
+  });
+  if (out != null) $('sm2Output').value = out; else $('sm2Output').value = '';
+});
+$('sm2SignBtn').addEventListener('click', function () {
+  var out = sm2Run(function () {
+    return B64Crypto.sm2Sign($('sm2Priv').value, $('sm2Input').value);
+  });
+  if (out != null) {
+    $('sm2Output').value = out;
+    $('sm2Meta').textContent = '已用 SM2 签名（默认用户 ID）';
+  }
+});
+$('sm2VerifyBtn').addEventListener('click', function () {
+  var ok = sm2Run(function () {
+    return B64Crypto.sm2Verify($('sm2Pub').value, $('sm2Input').value, $('sm2Output').value);
+  });
+  if (ok != null) {
+    $('sm2Meta').textContent = ok ? '签名有效 ✓' : '签名无效 ✗（公钥不对、消息被改过或签名有误）';
+  }
+});
+$('sm2CopyBtn').addEventListener('click', function () {
+  copyValue($('sm2Output').value, this);
+});
+
+// ---------------- dev tools tab ----------------
+
+// --- JSON ---
+function parseJsonInput() {
+  var text = $('jsonInput').value;
+  if (!text.trim()) {
+    $('jsonError').textContent = '请先粘贴 JSON';
+    return null;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    $('jsonError').textContent = 'JSON 解析失败：' + e.message;
+    return null;
+  }
+}
+$('jsonFormatBtn').addEventListener('click', function () {
+  $('jsonError').textContent = '';
+  $('jsonMeta').textContent = '';
+  var v = parseJsonInput();
+  if (v === null && $('jsonError').textContent) return;
+  $('jsonOutput').value = JSON.stringify(v, null, 2);
+  $('jsonMeta').textContent = '已格式化';
+});
+$('jsonMinifyBtn').addEventListener('click', function () {
+  $('jsonError').textContent = '';
+  $('jsonMeta').textContent = '';
+  var v = parseJsonInput();
+  if (v === null && $('jsonError').textContent) return;
+  $('jsonOutput').value = JSON.stringify(v);
+  $('jsonMeta').textContent = '已压缩';
+});
+$('jsonValidateBtn').addEventListener('click', function () {
+  $('jsonError').textContent = '';
+  var v = parseJsonInput();
+  if (v === null && $('jsonError').textContent) return;
+  var kind = Array.isArray(v) ? '数组（' + v.length + ' 项）' : (v && typeof v === 'object' ? '对象（' + Object.keys(v).length + ' 个键）' : typeof v);
+  $('jsonMeta').textContent = '合法的 JSON · ' + kind;
+  $('jsonOutput').value = JSON.stringify(v, null, 2);
+});
+function yamlScalar(v) {
+  if (v === null) return 'null';
+  if (typeof v === 'boolean' || typeof v === 'number') return String(v);
+  var s = String(v);
+  if (s === '' || /[:#\n]|^\s|\s$|^(true|false|null|~|[-+]?\d+(\.\d+)?)$/i.test(s) || /["'\\]/.test(s)) {
+    return JSON.stringify(s);
+  }
+  return s;
+}
+function jsonToYaml(v, indent) {
+  indent = indent || 0;
+  var pad = new Array(indent + 1).join('  ');
+  if (Array.isArray(v)) {
+    if (v.length === 0) return '[]';
+    var lines = [];
+    v.forEach(function (item) {
+      if (item && typeof item === 'object') {
+        var sub = jsonToYaml(item, indent + 1);
+        var subLines = sub.split('\n');
+        lines.push(pad + '- ' + subLines[0].slice(pad.length + 2));
+        for (var i = 1; i < subLines.length; i++) {
+          lines.push(pad + '  ' + subLines[i].slice(pad.length + 2));
+        }
+      } else {
+        lines.push(pad + '- ' + yamlScalar(item));
+      }
+    });
+    return lines.join('\n');
+  }
+  if (v && typeof v === 'object') {
+    var keys = Object.keys(v);
+    if (keys.length === 0) return '{}';
+    return keys.map(function (k) {
+      var val = v[k];
+      if (val && typeof val === 'object') {
+        if (Array.isArray(val) && val.length === 0) return pad + yamlScalar(k) + ': []';
+        if (!Array.isArray(val) && Object.keys(val).length === 0) return pad + yamlScalar(k) + ': {}';
+        return pad + yamlScalar(k) + ':\n' + jsonToYaml(val, indent + 1);
+      }
+      return pad + yamlScalar(k) + ': ' + yamlScalar(val);
+    }).join('\n');
+  }
+  return yamlScalar(v);
+}
+$('jsonYamlBtn').addEventListener('click', function () {
+  $('jsonError').textContent = '';
+  $('jsonMeta').textContent = '';
+  var v = parseJsonInput();
+  if (v === null && $('jsonError').textContent) return;
+  $('jsonOutput').value = jsonToYaml(v, 0);
+  $('jsonMeta').textContent = '已转为 YAML';
+});
+$('jsonCopyBtn').addEventListener('click', function () {
+  copyValue($('jsonOutput').value, this);
+});
+
+// --- URL params ---
+var urlBase = '';
+var urlHash = '';
+
+function addParamRow(key, value) {
+  var tbody = $('urlParamsBody');
+  var tr = document.createElement('tr');
+  var tdK = document.createElement('td');
+  var inputK = document.createElement('input');
+  inputK.type = 'text';
+  inputK.value = key || '';
+  inputK.placeholder = '参数名';
+  tdK.appendChild(inputK);
+  var tdV = document.createElement('td');
+  var inputV = document.createElement('input');
+  inputV.type = 'text';
+  inputV.value = value || '';
+  inputV.placeholder = '参数值';
+  tdV.appendChild(inputV);
+  var tdD = document.createElement('td');
+  tdD.className = 'del';
+  tdD.textContent = '✕';
+  tdD.title = '删除这一行';
+  tdD.addEventListener('click', function () { tr.remove(); });
+  tr.appendChild(tdK);
+  tr.appendChild(tdV);
+  tr.appendChild(tdD);
+  tbody.appendChild(tr);
+  $('urlParamsTable').style.display = '';
+}
+
+$('urlParseBtn').addEventListener('click', function () {
+  $('urlError').textContent = '';
+  var raw = $('urlInput').value.trim();
+  if (!raw) {
+    $('urlError').textContent = '请先粘贴 URL';
+    return;
+  }
+  var u;
+  try {
+    u = new URL(raw);
+  } catch (e) {
+    try {
+      u = new URL('https://' + raw);
+    } catch (e2) {
+      $('urlError').textContent = '无法解析这个 URL';
+      return;
+    }
+  }
+  urlBase = u.origin + u.pathname;
+  urlHash = u.hash || '';
+  $('urlParamsBody').innerHTML = '';
+  var count = 0;
+  u.searchParams.forEach(function (value, key) {
+    addParamRow(key, value);
+    count++;
+  });
+  if (count === 0) {
+    $('urlError').textContent = '这个 URL 没有查询参数（? 后面是空的）';
+    $('urlParamsTable').style.display = 'none';
+    return;
+  }
+  $('urlOutput').value = '';
+});
+
+$('urlAddParamBtn').addEventListener('click', function () {
+  addParamRow('', '');
+});
+
+$('urlBuildBtn').addEventListener('click', function () {
+  $('urlError').textContent = '';
+  if (!urlBase) {
+    $('urlError').textContent = '请先解析一个 URL';
+    return;
+  }
+  var rows = $('urlParamsBody').querySelectorAll('tr');
+  var parts = [];
+  rows.forEach(function (tr) {
+    var inputs = tr.querySelectorAll('input');
+    var k = inputs[0].value.trim();
+    var v = inputs[1].value;
+    if (!k) return;
+    parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(v));
+  });
+  $('urlOutput').value = urlBase + (parts.length ? '?' + parts.join('&') : '') + urlHash;
+});
+$('urlCopyBtn').addEventListener('click', function () {
+  copyValue($('urlOutput').value, this);
+});
+
+// --- regex ---
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+$('reTestBtn').addEventListener('click', function () {
+  $('reError').textContent = '';
+  $('reMeta').textContent = '';
+  var pattern = $('rePattern').value;
+  var flags = $('reFlags').value || '';
+  var text = $('reText').value;
+  if (!pattern) {
+    $('reError').textContent = '请先填写正则表达式';
+    return;
+  }
+  var re;
+  try {
+    re = new RegExp(pattern, flags);
+  } catch (e) {
+    $('reError').textContent = '正则表达式无效：' + e.message;
+    return;
+  }
+  var matches = [];
+  if (re.global) {
+    var m;
+    re.lastIndex = 0;
+    while ((m = re.exec(text)) !== null) {
+      matches.push({ index: m.index, text: m[0] });
+      if (m[0] === '') re.lastIndex++;
+      if (matches.length > 500) break;
+    }
+  } else {
+    var single = re.exec(text);
+    if (single) matches.push({ index: single.index, text: single[0] });
+  }
+  if (!matches.length) {
+    $('reMeta').textContent = '没有匹配到任何内容';
+    $('reOutput').textContent = text;
+    return;
+  }
+  var html = '';
+  var pos = 0;
+  matches.forEach(function (mt) {
+    html += escapeHtml(text.slice(pos, mt.index));
+    html += '<mark>' + escapeHtml(mt.text) + '</mark>';
+    pos = mt.index + mt.text.length;
+  });
+  html += escapeHtml(text.slice(pos));
+  $('reOutput').innerHTML = html;
+  $('reMeta').textContent = '共匹配 ' + matches.length + ' 处' + (matches.length >= 500 ? '（仅显示前 500 处）' : '');
+});
+
+// --- diff ---
+function lineDiff(aLines, bLines) {
+  var m = aLines.length;
+  var n = bLines.length;
+  // LCS dynamic programming table
+  var dp = [];
+  for (var i = 0; i <= m; i++) {
+    dp.push(new Array(n + 1).fill(0));
+  }
+  for (var i = m - 1; i >= 0; i--) {
+    for (var j = n - 1; j >= 0; j--) {
+      dp[i][j] = aLines[i] === bLines[j]
+        ? dp[i + 1][j + 1] + 1
+        : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  var ops = [];
+  var x = 0, y = 0;
+  while (x < m && y < n) {
+    if (aLines[x] === bLines[y]) {
+      ops.push({ type: 'same', text: aLines[x] });
+      x++; y++;
+    } else if (dp[x + 1][y] >= dp[x][y + 1]) {
+      ops.push({ type: 'del', text: aLines[x] });
+      x++;
+    } else {
+      ops.push({ type: 'add', text: bLines[y] });
+      y++;
+    }
+  }
+  while (x < m) { ops.push({ type: 'del', text: aLines[x] }); x++; }
+  while (y < n) { ops.push({ type: 'add', text: bLines[y] }); y++; }
+  return ops;
+}
+$('diffBtn').addEventListener('click', function () {
+  var a = $('diffA').value.split('\n');
+  var b = $('diffB').value.split('\n');
+  var box = $('diffOutput');
+  box.innerHTML = '';
+  if (a.length > 500 || b.length > 500) {
+    $('diffMeta').textContent = '行数太多（每侧最多 500 行），请缩短后再对比';
+    return;
+  }
+  var ops = lineDiff(a, b);
+  var adds = 0, dels = 0;
+  ops.forEach(function (op) {
+    var span = document.createElement('span');
+    if (op.type === 'del') {
+      span.className = 'diff-del';
+      span.textContent = '- ' + op.text;
+      dels++;
+    } else if (op.type === 'add') {
+      span.className = 'diff-add';
+      span.textContent = '+ ' + op.text;
+      adds++;
+    } else {
+      span.className = 'diff-same';
+      span.textContent = '  ' + op.text;
+    }
+    box.appendChild(span);
+  });
+  $('diffMeta').textContent = adds === 0 && dels === 0
+    ? '两段文本完全相同'
+    : '新增 ' + adds + ' 行，删除 ' + dels + ' 行';
+});
+
+// ---------------- codec chain tab ----------------
+
+var CHAIN_FORMATS = ['base64', 'base32', 'base58', 'base62', 'base85', 'base91',
+  'base122', 'base32768', 'base45', 'qp', 'punycode', 'gzip64', 'deflate64',
+  'hex', 'binary', 'octal', 'url', 'unicode', 'html', 'morse', 'rot13', 'caesar'];
+var chainSteps = [];
+
+function renderChainSteps() {
+  var box = $('chainSteps');
+  box.innerHTML = '';
+  if (!chainSteps.length) {
+    var empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = '还没有步骤，点「添加步骤」开始（建议从 URL 解码、Base64 解码这类开始）';
+    box.appendChild(empty);
+    return;
+  }
+  chainSteps.forEach(function (step, idx) {
+    var row = document.createElement('div');
+    row.className = 'chain-step';
+    var no = document.createElement('span');
+    no.className = 'step-no';
+    no.textContent = (idx + 1) + '.';
+    var fmtSel = document.createElement('select');
+    CHAIN_FORMATS.forEach(function (f) {
+      var opt = document.createElement('option');
+      opt.value = f;
+      opt.textContent = B64Codec.FORMAT_LABELS[f] || f;
+      if (f === step.format) opt.selected = true;
+      fmtSel.appendChild(opt);
+    });
+    fmtSel.addEventListener('change', function () { step.format = fmtSel.value; });
+    var arrow = document.createElement('span');
+    arrow.className = 'arrow';
+    arrow.textContent = '→';
+    var dirSel = document.createElement('select');
+    [['decode', '解码'], ['encode', '编码']].forEach(function (d) {
+      var opt = document.createElement('option');
+      opt.value = d[0];
+      opt.textContent = d[1];
+      if (d[0] === step.dir) opt.selected = true;
+      dirSel.appendChild(opt);
+    });
+    dirSel.addEventListener('change', function () { step.dir = dirSel.value; });
+    var up = document.createElement('button');
+    up.className = 'small';
+    up.textContent = '↑';
+    up.disabled = idx === 0;
+    up.title = '上移';
+    up.addEventListener('click', function () {
+      var t = chainSteps[idx - 1];
+      chainSteps[idx - 1] = chainSteps[idx];
+      chainSteps[idx] = t;
+      renderChainSteps();
+    });
+    var down = document.createElement('button');
+    down.className = 'small';
+    down.textContent = '↓';
+    down.disabled = idx === chainSteps.length - 1;
+    down.title = '下移';
+    down.addEventListener('click', function () {
+      var t = chainSteps[idx + 1];
+      chainSteps[idx + 1] = chainSteps[idx];
+      chainSteps[idx] = t;
+      renderChainSteps();
+    });
+    var del = document.createElement('button');
+    del.className = 'small danger';
+    del.textContent = '✕';
+    del.title = '删除这一步';
+    del.addEventListener('click', function () {
+      chainSteps.splice(idx, 1);
+      renderChainSteps();
+    });
+    row.appendChild(no);
+    row.appendChild(fmtSel);
+    row.appendChild(arrow);
+    row.appendChild(dirSel);
+    row.appendChild(up);
+    row.appendChild(down);
+    row.appendChild(del);
+    box.appendChild(row);
+  });
+}
+
+$('chainAddBtn').addEventListener('click', function () {
+  chainSteps.push({ format: 'base64', dir: 'decode' });
+  renderChainSteps();
+});
+$('chainClearBtn').addEventListener('click', function () {
+  chainSteps = [];
+  renderChainSteps();
+  $('chainOutput').value = '';
+  $('chainMeta').textContent = '';
+  $('chainError').textContent = '';
+});
+
+$('chainRunBtn').addEventListener('click', function () {
+  var input = $('chainInput').value;
+  $('chainError').textContent = '';
+  $('chainMeta').textContent = '';
+  if (!chainSteps.length) {
+    $('chainError').textContent = '请先添加至少一个步骤';
+    return;
+  }
+  if (!input) {
+    $('chainError').textContent = '请先粘贴要处理的文本';
+    return;
+  }
+  var cur = input;
+  var chain = Promise.resolve();
+  chainSteps.forEach(function (step, idx) {
+    chain = chain.then(function () {
+      var label = (B64Codec.FORMAT_LABELS[step.format] || step.format) +
+        (step.dir === 'decode' ? '解码' : '编码');
+      if (step.dir === 'decode') {
+        return Promise.resolve(B64Codec.decodeAs(cur, step.format)).then(function (r) {
+          if (!r.ok) throw new Error('第 ' + (idx + 1) + ' 步（' + label + '）失败：' + r.error);
+          cur = r.kind === 'binary' ? r.hex : r.text;
+        });
+      }
+      return Promise.resolve(B64Codec.encodeAs(cur, step.format)).then(function (enc) {
+        if (enc == null) throw new Error('第 ' + (idx + 1) + ' 步（' + label + '）无法编码');
+        cur = enc;
+      });
+    });
+  });
+  chain.then(function () {
+    $('chainOutput').value = cur;
+    $('chainMeta').textContent = '已执行 ' + chainSteps.length + ' 步';
+  }).catch(function (err) {
+    $('chainError').textContent = err.message;
+  });
+});
+$('chainCopyBtn').addEventListener('click', function () {
+  copyValue($('chainOutput').value, this);
+});
+
+function refreshRecipeSelect() {
+  B64Store.listRecipes().then(function (list) {
+    var sel = $('recipeSelect');
+    sel.innerHTML = '';
+    var first = document.createElement('option');
+    first.value = '';
+    first.textContent = list.length ? '选择已保存的配方…' : '暂无已保存的配方';
+    sel.appendChild(first);
+    list.forEach(function (r) {
+      var opt = document.createElement('option');
+      opt.value = r.name;
+      opt.textContent = r.name + '（' + r.steps.length + ' 步）';
+      sel.appendChild(opt);
+    });
+  });
+}
+
+$('recipeSaveBtn').addEventListener('click', function () {
+  var name = $('recipeName').value.trim();
+  if (!name) {
+    $('chainError').textContent = '请先填写配方名称';
+    return;
+  }
+  if (!chainSteps.length) {
+    $('chainError').textContent = '当前没有步骤可保存';
+    return;
+  }
+  $('chainError').textContent = '';
+  B64Store.saveRecipe({
+    name: name,
+    steps: chainSteps.map(function (s) { return { format: s.format, dir: s.dir }; }),
+    ts: Date.now()
+  }).then(function () {
+    $('chainMeta').textContent = '配方「' + name + '」已保存';
+    $('recipeName').value = '';
+    refreshRecipeSelect();
+  });
+});
+$('recipeLoadBtn').addEventListener('click', function () {
+  var name = $('recipeSelect').value;
+  if (!name) {
+    $('chainError').textContent = '请先选择一个配方';
+    return;
+  }
+  B64Store.listRecipes().then(function (list) {
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].name === name) {
+        chainSteps = list[i].steps.map(function (s) { return { format: s.format, dir: s.dir }; });
+        renderChainSteps();
+        $('chainError').textContent = '';
+        $('chainMeta').textContent = '已加载配方「' + name + '」';
+        return;
+      }
+    }
+    $('chainError').textContent = '找不到这个配方';
+  });
+});
+$('recipeDelBtn').addEventListener('click', function () {
+  var name = $('recipeSelect').value;
+  if (!name) {
+    $('chainError').textContent = '请先选择一个配方';
+    return;
+  }
+  B64Store.removeRecipe(name).then(function () {
+    $('chainMeta').textContent = '已删除配方「' + name + '」';
+    refreshRecipeSelect();
+  });
+});
+
+document.querySelectorAll('.tab-btn').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    if (btn.dataset.tab === 'chain') refreshRecipeSelect();
+  });
+});
+renderChainSteps();
+refreshRecipeSelect();
+
+// ---------------- history filter & export ----------------
+
+(function initHistFilter() {
+  var sel = $('histFilter');
+  Object.keys(B64Codec.FORMAT_LABELS).forEach(function (f) {
+    var opt = document.createElement('option');
+    opt.value = f;
+    opt.textContent = B64Codec.FORMAT_LABELS[f];
+    sel.appendChild(opt);
+  });
+  sel.addEventListener('change', renderHistory);
+})();
+
+function downloadTextFile(filename, text) {
+  var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+}
+$('histExportJsonBtn').addEventListener('click', function () {
+  B64Store.list().then(function (list) {
+    downloadTextFile('snapdecode-history.json', JSON.stringify(list, null, 2));
+  });
+});
+$('histExportTextBtn').addEventListener('click', function () {
+  B64Store.list().then(function (list) {
+    var lines = [];
+    list.forEach(function (e) {
+      lines.push('[' + new Date(e.ts).toLocaleString('zh-CN') + '] ' +
+        (e.mode === 'encode' ? '编码' : '解码') +
+        (e.format ? ' · ' + (B64Codec.FORMAT_LABELS[e.format] || e.format) : '') +
+        (e.fav ? ' ★' : ''));
+      lines.push('入：' + e.input);
+      lines.push('出：' + e.output);
+      lines.push('---');
+    });
+    downloadTextFile('snapdecode-history.txt', lines.join('\n'));
+  });
+});
+$('histFilter').addEventListener('change', renderHistory);

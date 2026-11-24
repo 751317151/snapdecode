@@ -1,17 +1,21 @@
 // B64Codec — shared codec logic (no chrome APIs) used by the content script
-// and the popup. Covers Base64/32/58/62/85/91, Hex, binary, octal, URL
-// encoding, Unicode escapes, HTML entities, Morse, ROT13/Caesar, JWT,
-// format detection, candidate extraction, image/gzip detection and
-// multi-encoding text fallback (UTF-8 -> GBK -> GB18030).
+// and the popup. Covers Base64/32/58/62/85/91/122/32768/45, Hex, binary,
+// octal, URL encoding, Unicode escapes, HTML entities, Morse, ROT13/Caesar,
+// Quoted-Printable, Punycode, gzip/deflate + Base64, JWT, format detection,
+// candidate extraction, image/gzip detection and multi-encoding text
+// fallback (UTF-8 -> GBK -> GB18030).
 // Safe to load in a browser page context or in Node (for tests).
 (function (global) {
   'use strict';
 
   var FORMAT_LABELS = {
     base64: 'Base64', base32: 'Base32', base58: 'Base58', base62: 'Base62',
-    base85: 'Base85', base91: 'Base91', hex: 'Hex', binary: '二进制', octal: '八进制',
+    base85: 'Base85', base91: 'Base91', base122: 'Base122', base32768: 'Base32768',
+    base45: 'Base45', hex: 'Hex', binary: '二进制', octal: '八进制',
     url: 'URL 编码', unicode: 'Unicode 转义', html: 'HTML 实体', morse: '摩斯电码',
-    rot13: 'ROT13', caesar: '凯撒密码', jwt: 'JWT'
+    rot13: 'ROT13', caesar: '凯撒密码', jwt: 'JWT',
+    qp: 'Quoted-Printable', punycode: 'Punycode',
+    gzip64: 'gzip+Base64', deflate64: 'deflate+Base64'
   };
 
   // ---------- byte helpers ----------
@@ -411,6 +415,518 @@
     return bytesResult(new Uint8Array(bytes), 'base91', s);
   }
 
+  // ---------- Base122 (kevinAlbs/Base122) ----------
+
+  // 7-bit groups; the six values below cannot appear as single bytes in
+  // valid UTF-8 text, so each is carried in a two-byte character together
+  // with the following 7-bit group. A trailing illegal group uses the
+  // "shortened" form (index 7) and carries itself.
+  var B122_ILLEGALS = [0, 10, 13, 34, 38, 92];
+  var B122_SHORTENED = 7;
+
+  function encodeBase122(text) {
+    var bytes = new TextEncoder().encode(String(text == null ? '' : text));
+    var chunks = [];
+    var value = 0, bits = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      value = (value << 8) | bytes[i];
+      bits += 8;
+      while (bits >= 7) {
+        bits -= 7;
+        chunks.push((value >>> bits) & 0x7F);
+      }
+      value &= (1 << bits) - 1;
+    }
+    if (bits > 0) chunks.push((value << (7 - bits)) & 0x7F);
+    var out = '';
+    for (var j = 0; j < chunks.length; j++) {
+      var c = chunks[j];
+      var idx = B122_ILLEGALS.indexOf(c);
+      if (idx === -1) { out += String.fromCharCode(c); continue; }
+      var next, field;
+      if (j + 1 < chunks.length) { next = chunks[j + 1]; field = idx; j++; }
+      else { next = c; field = B122_SHORTENED; }
+      var b1 = 0xC2 | ((field & 7) << 2) | ((next >>> 6) & 1);
+      var b2 = 0x80 | (next & 0x3F);
+      out += String.fromCharCode(((b1 & 0x1F) << 6) | (b2 & 0x3F));
+    }
+    return out;
+  }
+
+  function decodeBase122(input) {
+    var s = String(input == null ? '' : input);
+    if (!s) return fail('没有可解码的内容', 'base122');
+    var bytes = [];
+    var curByte = 0, bitOfByte = 0;
+    function push7(b) {
+      b <<= 1;
+      curByte |= (b >>> bitOfByte);
+      bitOfByte += 7;
+      if (bitOfByte >= 8) {
+        bytes.push(curByte & 0xFF);
+        bitOfByte -= 8;
+        curByte = (b << (7 - bitOfByte)) & 0xFF;
+      }
+    }
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c > 127) {
+        if (c > 0x07FF) {
+          return fail('包含非 Base122 字符（第 ' + (i + 1) + ' 个字符）', 'base122');
+        }
+        var illegalIndex = (c >>> 8) & 7;
+        if (illegalIndex === 6) {
+          return fail('非法的 Base122 双字节字符（第 ' + (i + 1) + ' 个字符）', 'base122');
+        }
+        if (illegalIndex !== B122_SHORTENED) push7(B122_ILLEGALS[illegalIndex]);
+        push7(c & 127);
+      } else {
+        if (B122_ILLEGALS.indexOf(c) !== -1) {
+          return fail('包含非 Base122 字符（第 ' + (i + 1) + ' 个字符为非法单字节）', 'base122');
+        }
+        push7(c);
+      }
+    }
+    return bytesResult(new Uint8Array(bytes), 'base122', s);
+  }
+
+  // ---------- Base32768 (qntm/base32768 v5) ----------
+
+  // The 15-bit repertoire (32768 chars) and the 7-bit tail repertoire
+  // (128 chars) are generated from Unicode ranges, exactly as in the
+  // reference implementation's pair strings.
+  var B32768_RANGES_15 = [
+    [0x04A0, 0x04BF], [0x0500, 0x051F], [0x0680, 0x06BF], [0x0760, 0x079F],
+    [0x07C0, 0x07DF], [0x1000, 0x101F], [0x10A0, 0x10BF], [0x1100, 0x115F],
+    [0x1180, 0x119F], [0x11E0, 0x123F], [0x1260, 0x127F], [0x12E0, 0x12FF],
+    [0x1320, 0x133F], [0x13A0, 0x13DF], [0x1420, 0x165F], [0x16A0, 0x16DF],
+    [0x1780, 0x179F], [0x1820, 0x185F], [0x18C0, 0x18DF], [0x1980, 0x199F],
+    [0x19E0, 0x19FF], [0x1A20, 0x1A3F], [0x1BC0, 0x1BDF], [0x1C00, 0x1C1F],
+    [0x1D00, 0x1D1F], [0x21E0, 0x21FF], [0x22C0, 0x22DF], [0x2340, 0x23DF],
+    [0x2400, 0x241F], [0x2500, 0x275F], [0x2780, 0x27BF], [0x2800, 0x297F],
+    [0x29A0, 0x29BF], [0x2A20, 0x2A5F], [0x2A80, 0x2ABF], [0x2AE0, 0x2B5F],
+    [0x2C00, 0x2C1F], [0x2C80, 0x2CDF], [0x2D00, 0x2D1F], [0x2D40, 0x2D5F],
+    [0x2EA0, 0x2EDF], [0x31C0, 0x31DF], [0x3400, 0x4D9F], [0x4DC0, 0x9FBF],
+    [0xA000, 0xA47F], [0xA4A0, 0xA4BF], [0xA500, 0xA5FF], [0xA640, 0xA65F],
+    [0xA6A0, 0xA6DF], [0xA700, 0xA75F], [0xA780, 0xA79F], [0xA840, 0xA85F]
+  ];
+  var B32768_RANGES_7 = [[0x0180, 0x019F], [0x0240, 0x029F]];
+
+  var b32768Tables = null;
+
+  function getB32768Tables() {
+    if (b32768Tables) return b32768Tables;
+    function build(ranges) {
+      var arr = [];
+      for (var r = 0; r < ranges.length; r++) {
+        for (var cp = ranges[r][0]; cp <= ranges[r][1]; cp++) {
+          arr.push(String.fromCharCode(cp));
+        }
+      }
+      return arr;
+    }
+    var enc15 = build(B32768_RANGES_15);
+    var enc7 = build(B32768_RANGES_7);
+    var dec = Object.create(null);
+    var i;
+    for (i = 0; i < enc15.length; i++) dec[enc15[i]] = [15, i];
+    for (i = 0; i < enc7.length; i++) dec[enc7[i]] = [7, i];
+    b32768Tables = { enc15: enc15, enc7: enc7, dec: dec };
+    return b32768Tables;
+  }
+
+  function encodeBase32768(text) {
+    var bytes = new TextEncoder().encode(String(text == null ? '' : text));
+    var t = getB32768Tables();
+    var out = '';
+    var value = 0, bits = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      value = (value << 8) | bytes[i];
+      bits += 8;
+      while (bits >= 15) {
+        bits -= 15;
+        out += t.enc15[(value >>> bits) & 0x7FFF];
+      }
+      value &= (1 << bits) - 1;
+    }
+    if (bits > 0) {
+      if (bits >= 8) {
+        // pad with 1s to 15 bits, normal repertoire
+        out += t.enc15[(value << (15 - bits)) | ((1 << (15 - bits)) - 1)];
+      } else {
+        // pad with 1s to 7 bits, tail repertoire
+        out += t.enc7[(value << (7 - bits)) | ((1 << (7 - bits)) - 1)];
+      }
+    }
+    return out;
+  }
+
+  function decodeBase32768(input) {
+    var s = String(input == null ? '' : input);
+    if (!s) return fail('没有可解码的内容', 'base32768');
+    var t = getB32768Tables();
+    var bytes = [];
+    var value = 0, bits = 0;
+    for (var i = 0; i < s.length; i++) {
+      var entry = t.dec[s[i]];
+      if (entry === undefined) {
+        return fail('包含非 Base32768 字符（第 ' + (i + 1) + ' 个字符）', 'base32768');
+      }
+      if (entry[0] !== 15 && i !== s.length - 1) {
+        return fail('7 位收尾字符只能出现在末尾', 'base32768');
+      }
+      value = (value << entry[0]) | entry[1];
+      bits += entry[0];
+      while (bits >= 8) {
+        bits -= 8;
+        bytes.push((value >>> bits) & 0xFF);
+      }
+      value &= (1 << bits) - 1;
+    }
+    if (bits > 0 && value !== (1 << bits) - 1) {
+      return fail('填充位校验失败，不是合法的 Base32768', 'base32768');
+    }
+    return bytesResult(new Uint8Array(bytes), 'base32768', s);
+  }
+
+  // ---------- Base45 (RFC 9285) ----------
+
+  var B45_ALPHABET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
+
+  function encodeBase45(text) {
+    var bytes = new TextEncoder().encode(String(text == null ? '' : text));
+    var out = '';
+    var i = 0;
+    for (; i + 1 < bytes.length; i += 2) {
+      var x = bytes[i] * 256 + bytes[i + 1];
+      out += B45_ALPHABET[x % 45];
+      out += B45_ALPHABET[Math.floor(x / 45) % 45];
+      out += B45_ALPHABET[Math.floor(x / 2025)];
+    }
+    if (i < bytes.length) {
+      var b = bytes[i];
+      out += B45_ALPHABET[b % 45];
+      out += B45_ALPHABET[Math.floor(b / 45)];
+    }
+    return out;
+  }
+
+  function decodeBase45(input) {
+    // Space is part of the alphabet, so only line breaks / tabs are
+    // stripped; surrounding spaces are data.
+    var s = String(input == null ? '' : input).replace(/[\r\n\t]+/g, '');
+    if (!s) return fail('没有可解码的内容', 'base45');
+    if (s.length % 3 === 1) return fail('长度无效，不是合法的 Base45', 'base45');
+    var bytes = [];
+    var n = s.length;
+    var limit = n - (n % 3);
+    var i;
+    for (i = 0; i < limit; i += 3) {
+      var c = B45_ALPHABET.indexOf(s[i]);
+      var d = B45_ALPHABET.indexOf(s[i + 1]);
+      var e = B45_ALPHABET.indexOf(s[i + 2]);
+      if (c < 0 || d < 0 || e < 0) return fail('包含非 Base45 字符', 'base45');
+      var x = c + d * 45 + e * 2025;
+      if (x > 65535) return fail('数值超出范围，不是合法的 Base45', 'base45');
+      bytes.push((x >> 8) & 0xFF, x & 0xFF);
+    }
+    if (i < n) {
+      var c2 = B45_ALPHABET.indexOf(s[i]);
+      var d2 = B45_ALPHABET.indexOf(s[i + 1]);
+      if (c2 < 0 || d2 < 0) return fail('包含非 Base45 字符', 'base45');
+      var y = c2 + d2 * 45;
+      if (y > 255) return fail('数值超出范围，不是合法的 Base45', 'base45');
+      bytes.push(y);
+    }
+    return bytesResult(new Uint8Array(bytes), 'base45', s);
+  }
+
+  // ---------- Quoted-Printable (RFC 2045 section 6.7) ----------
+
+  // Encodes to lines of at most 76 characters, soft-wrapped with a
+  // trailing '='. Line endings are normalized to '\n'. Decoding is
+  // lenient: a '=' not followed by two hex digits (and not a soft line
+  // break) is kept literally, as in Python's quopri module.
+  function encodeQuotedPrintable(text) {
+    var s = String(text == null ? '' : text);
+    var lines = s.split('\n');
+    var outLines = [];
+    for (var li = 0; li < lines.length; li++) {
+      var line = lines[li];
+      if (line.charAt(line.length - 1) === '\r') line = line.slice(0, -1);
+      var bytes = new TextEncoder().encode(line);
+      var tokens = [];
+      for (var i = 0; i < bytes.length; i++) {
+        var b = bytes[i];
+        var last = (i === bytes.length - 1);
+        if (b === 61) tokens.push('=3D');
+        else if (b === 32) tokens.push(last ? '=20' : ' ');
+        else if (b === 9) tokens.push(last ? '=09' : '\t');
+        else if (b >= 33 && b <= 126) tokens.push(String.fromCharCode(b));
+        else tokens.push('=' + b.toString(16).toUpperCase().padStart(2, '0'));
+      }
+      var cur = '';
+      var wrapped = [];
+      for (var t = 0; t < tokens.length; t++) {
+        var tok = tokens[t];
+        if (cur.length + tok.length > 75) {
+          // never leave a space/tab at the end of a soft-broken line
+          var moved = '';
+          if (cur.charAt(cur.length - 1) === ' ' || cur.charAt(cur.length - 1) === '\t') {
+            moved = cur.charAt(cur.length - 1);
+            cur = cur.slice(0, -1);
+          }
+          wrapped.push(cur + '=');
+          cur = moved;
+        }
+        cur += tok;
+      }
+      wrapped.push(cur);
+      outLines.push(wrapped.join('\n'));
+    }
+    return outLines.join('\n');
+  }
+
+  function decodeQuotedPrintable(input) {
+    var s = String(input == null ? '' : input);
+    if (!s) return fail('没有可解码的内容', 'qp');
+    var noSoft = s.replace(/=\r\n/g, '').replace(/=\n/g, '');
+    var bytes = [];
+    function pushText(str) {
+      if (!str) return;
+      var b = new TextEncoder().encode(str);
+      for (var k = 0; k < b.length; k++) bytes.push(b[k]);
+    }
+    var re = /=([0-9A-Fa-f]{2})/g;
+    var last = 0;
+    var m;
+    while ((m = re.exec(noSoft)) !== null) {
+      pushText(noSoft.slice(last, m.index));
+      bytes.push(parseInt(m[1], 16));
+      last = m.index + m[0].length;
+    }
+    pushText(noSoft.slice(last));
+    return bytesResult(new Uint8Array(bytes), 'qp', s.trim());
+  }
+
+  // ---------- Punycode (RFC 3492, IDNA xn-- labels) ----------
+
+  var PUNY_BASE = 36, PUNY_TMIN = 1, PUNY_TMAX = 26, PUNY_SKEW = 38,
+      PUNY_DAMP = 700, PUNY_INITIAL_BIAS = 72, PUNY_INITIAL_N = 128;
+
+  function punyAdapt(delta, numpoints, firsttime) {
+    delta = firsttime ? Math.floor(delta / PUNY_DAMP) : (delta >> 1);
+    delta += Math.floor(delta / numpoints);
+    var k = 0;
+    while (delta > ((PUNY_BASE - PUNY_TMIN) * PUNY_TMAX) / 2) {
+      delta = Math.floor(delta / (PUNY_BASE - PUNY_TMIN));
+      k += PUNY_BASE;
+    }
+    return k + Math.floor(((PUNY_BASE - PUNY_TMIN + 1) * delta) / (delta + PUNY_SKEW));
+  }
+
+  function punyDigitToChar(d) {
+    return d < 26 ? String.fromCharCode(97 + d) : String.fromCharCode(22 + d);
+  }
+
+  function punyCharToDigit(c) {
+    if (c >= 48 && c <= 57) return c - 22; // '0'-'9' -> 26-35
+    if (c >= 65 && c <= 90) return c - 65; // 'A'-'Z' -> 0-25
+    if (c >= 97 && c <= 122) return c - 97; // 'a'-'z' -> 0-25
+    return -1;
+  }
+
+  function stringToCodePoints(s) {
+    var cps = [];
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      if (c >= 0xD800 && c <= 0xDBFF && i + 1 < s.length) {
+        var c2 = s.charCodeAt(i + 1);
+        if (c2 >= 0xDC00 && c2 <= 0xDFFF) {
+          cps.push(((c - 0xD800) * 0x400) + (c2 - 0xDC00) + 0x10000);
+          i++;
+          continue;
+        }
+      }
+      cps.push(c);
+    }
+    return cps;
+  }
+
+  function codePointsToString(cps) {
+    var out = '';
+    for (var i = 0; i < cps.length; i++) out += String.fromCodePoint(cps[i]);
+    return out;
+  }
+
+  function punycodeEncodeLabel(cps) {
+    var output = '';
+    var n = PUNY_INITIAL_N, delta = 0, bias = PUNY_INITIAL_BIAS;
+    var b = 0, h, i, j, k, m, q, t;
+    for (i = 0; i < cps.length; i++) {
+      if (cps[i] < 128) { output += String.fromCharCode(cps[i]); b++; }
+    }
+    h = b;
+    if (b > 0) output += '-';
+    while (h < cps.length) {
+      m = 0x10FFFF;
+      for (j = 0; j < cps.length; j++) {
+        if (cps[j] >= n && cps[j] < m) m = cps[j];
+      }
+      delta += (m - n) * (h + 1);
+      n = m;
+      for (j = 0; j < cps.length; j++) {
+        if (cps[j] < n) {
+          delta++;
+        } else if (cps[j] === n) {
+          q = delta;
+          for (k = PUNY_BASE; ; k += PUNY_BASE) {
+            t = k <= bias ? PUNY_TMIN : (k >= bias + PUNY_TMAX ? PUNY_TMAX : k - bias);
+            if (q < t) break;
+            output += punyDigitToChar(t + (q - t) % (PUNY_BASE - t));
+            q = Math.floor((q - t) / (PUNY_BASE - t));
+          }
+          output += punyDigitToChar(q);
+          bias = punyAdapt(delta, h + 1, h === b);
+          delta = 0;
+          h++;
+        }
+      }
+      delta++;
+      n++;
+    }
+    return output;
+  }
+
+  function punycodeDecodeLabel(input) {
+    var output = [];
+    var n = PUNY_INITIAL_N, i = 0, bias = PUNY_INITIAL_BIAS;
+    var delim = input.lastIndexOf('-');
+    var idx = 0;
+    if (delim >= 0) {
+      for (var j = 0; j < delim; j++) {
+        var c = input.charCodeAt(j);
+        if (c >= 128) return null;
+        output.push(c);
+      }
+      idx = delim + 1;
+    }
+    while (idx < input.length) {
+      var oldi = i, w = 1, k = PUNY_BASE;
+      for (;; k += PUNY_BASE) {
+        if (idx >= input.length) return null;
+        var digit = punyCharToDigit(input.charCodeAt(idx++));
+        if (digit < 0) return null;
+        i += digit * w;
+        var t = k <= bias ? PUNY_TMIN : (k >= bias + PUNY_TMAX ? PUNY_TMAX : k - bias);
+        if (digit < t) break;
+        w *= (PUNY_BASE - t);
+      }
+      var outLen = output.length + 1;
+      bias = punyAdapt(i - oldi, outLen, oldi === 0);
+      n += Math.floor(i / outLen);
+      i %= outLen;
+      if (n > 0x10FFFF) return null;
+      output.splice(i, 0, n);
+      i++;
+    }
+    return output;
+  }
+
+  // Encodes a domain: labels with non-ASCII characters become
+  // xn-- + punycode, pure-ASCII labels pass through unchanged. The case
+  // of ASCII characters is preserved (RFC 3492 examples keep it).
+  function encodePunycode(domain) {
+    var s = String(domain == null ? '' : domain).trim();
+    if (!s) return '';
+    var labels = s.split('.');
+    var out = [];
+    for (var i = 0; i < labels.length; i++) {
+      var label = labels[i];
+      if (!label || /^[\x00-\x7F]*$/.test(label)) { out.push(label); continue; }
+      out.push('xn--' + punycodeEncodeLabel(stringToCodePoints(label)));
+    }
+    return out.join('.');
+  }
+
+  function decodePunycode(input) {
+    var s = String(input == null ? '' : input).trim();
+    if (!s) return fail('没有可解码的内容', 'punycode');
+    var labels = s.split('.');
+    var out = [];
+    var found = false;
+    for (var i = 0; i < labels.length; i++) {
+      var label = labels[i];
+      if (/^xn--/i.test(label)) {
+        found = true;
+        // Do not lowercase: the digit lookup is case-insensitive, while
+        // the basic characters before the last '-' keep their case
+        // (RFC 3492: "Mnchen-Ost-9db" decodes to "München-Ost").
+        var cps = punycodeDecodeLabel(label.slice(4));
+        if (cps === null) return fail('Punycode 标签解码失败：' + label, 'punycode');
+        out.push(codePointsToString(cps));
+      } else {
+        out.push(label);
+      }
+    }
+    if (!found) return fail('未发现 xn-- 标签', 'punycode');
+    var text = out.join('.');
+    return { ok: true, kind: 'text', text: text,
+             encoding: 'UTF-8', byteLength: text.length, bytes: null, format: 'punycode', cleaned: s };
+  }
+
+  // ---------- gzip / deflate + Base64 (async) ----------
+
+  function compressBytes(bytes, kind) {
+    var format = kind === 'gzip' ? 'gzip' : 'deflate';
+    var stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream(format));
+    return new Response(stream).arrayBuffer().then(function (buf) { return new Uint8Array(buf); });
+  }
+
+  function encodeGzipB64(text) {
+    var bytes = new TextEncoder().encode(String(text == null ? '' : text));
+    return compressBytes(bytes, 'gzip').then(function (comp) {
+      return btoa(bytesToBinaryString(comp));
+    });
+  }
+
+  function encodeDeflateB64(text) {
+    var bytes = new TextEncoder().encode(String(text == null ? '' : text));
+    return compressBytes(bytes, 'deflate').then(function (comp) {
+      return btoa(bytesToBinaryString(comp));
+    });
+  }
+
+  function decodeGzipB64(input) {
+    var r = decodeBase64(input);
+    if (!r.ok) return Promise.resolve(fail('Base64 解码失败：' + r.error, 'gzip64'));
+    if (!r.bytes || detectCompression(r.bytes) !== 'gzip') {
+      return Promise.resolve(fail('解码后不是 gzip 数据（缺少 gzip 魔数 1F 8B）', 'gzip64'));
+    }
+    return decompressBytes(r.bytes, 'gzip').then(function (out) {
+      var res = bytesResult(out, 'gzip64', r.cleaned);
+      res.decompressed = 'gzip';
+      return res;
+    }).catch(function () {
+      return fail('gzip 解压失败，数据可能已损坏或不完整', 'gzip64');
+    });
+  }
+
+  function decodeDeflateB64(input) {
+    var r = decodeBase64(input);
+    if (!r.ok) return Promise.resolve(fail('Base64 解码失败：' + r.error, 'deflate64'));
+    if (!r.bytes || detectCompression(r.bytes) !== 'zlib') {
+      return Promise.resolve(fail('解码后不是 zlib/deflate 数据（缺少 zlib 魔数）', 'deflate64'));
+    }
+    return decompressBytes(r.bytes, 'deflate').then(function (out) {
+      var res = bytesResult(out, 'deflate64', r.cleaned);
+      res.decompressed = 'deflate';
+      return res;
+    }).catch(function () {
+      return fail('deflate 解压失败，数据可能已损坏或不完整', 'deflate64');
+    });
+  }
+
   // ---------- Binary / Octal (text) ----------
 
   function encodeBinary(text) {
@@ -633,6 +1149,13 @@
       case 'base62': return decodeBase62(input);
       case 'base85': return decodeBase85(input);
       case 'base91': return decodeBase91(input);
+      case 'base122': return decodeBase122(input);
+      case 'base32768': return decodeBase32768(input);
+      case 'base45': return decodeBase45(input);
+      case 'qp': return decodeQuotedPrintable(input);
+      case 'punycode': return decodePunycode(input);
+      case 'gzip64': return decodeGzipB64(input);
+      case 'deflate64': return decodeDeflateB64(input);
       case 'hex': return decodeHex(input);
       case 'binary': return decodeBinary(input);
       case 'octal': return decodeOctal(input);
@@ -661,6 +1184,13 @@
       case 'base62': return encodeBase62(text);
       case 'base85': return encodeBase85(text);
       case 'base91': return encodeBase91(text);
+      case 'base122': return encodeBase122(text);
+      case 'base32768': return encodeBase32768(text);
+      case 'base45': return encodeBase45(text);
+      case 'qp': return encodeQuotedPrintable(text);
+      case 'punycode': return encodePunycode(text);
+      case 'gzip64': return encodeGzipB64(text);
+      case 'deflate64': return encodeDeflateB64(text);
       case 'hex': return encodeHex(text);
       case 'binary': return encodeBinary(text);
       case 'octal': return encodeOctal(text);
@@ -672,6 +1202,15 @@
       case 'caesar': return caesarShift(text, opts && opts.shift != null ? opts.shift : 3);
       default: return null;
     }
+  }
+
+  // Readable decoded text for detection: UTF-8 (not a GBK fallback guess)
+  // and no control characters other than tab / CR / LF. Used by the
+  // Quoted-Printable and Base45 detectors, whose inputs can otherwise be
+  // confused with key=value fragments or plain uppercase text.
+  function isReadableText(r) {
+    return !!(r && r.ok && r.kind === 'text' && r.encoding === 'UTF-8' &&
+      !/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(r.text));
   }
 
   function detectFormat(input) {
@@ -690,6 +1229,20 @@
     }
     if (/\\u[0-9A-Fa-f]{4}|\\x[0-9A-Fa-f]{2}/.test(s)) return 'unicode';
     if (/%[0-9A-Fa-f]{2}/.test(s)) return 'url';
+    // Punycode: an xn-- label that decodes to non-ASCII text and
+    // re-encodes to the same domain (guards against base64url lookalikes)
+    if (/xn--/i.test(s) && !/\s/.test(s)) {
+      var puny = decodePunycode(s);
+      if (puny.ok && /[^\x00-\x7F]/.test(puny.text) &&
+          encodePunycode(puny.text).toLowerCase() === s.toLowerCase()) {
+        return 'punycode';
+      }
+    }
+    // Quoted-Printable: at least one =XX sequence, decodes to readable text
+    if (/=[0-9A-Fa-f]{2}/.test(s)) {
+      var qp = decodeQuotedPrintable(s);
+      if (isReadableText(qp)) return 'qp';
+    }
     if (/&(#\d+|#x[0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]+);/.test(s)) return 'html';
     // Morse: only dots, dashes, slashes and spaces, at least two valid groups
     if (/^[.\-/\s]+$/.test(s)) {
@@ -738,6 +1291,13 @@
     if (/^[0-9A-Za-z]+$/.test(nospace) && nospace.length >= 8) {
       var d62 = decodeBase62(s);
       if (d62.ok && d62.kind === 'text') return 'base62';
+    }
+    // Base45: alphabet-only, at least 8 chars, must contain a Base45-only
+    // non-alphanumeric character. Space is part of the alphabet, so the
+    // original string — not the space-stripped one — is used here.
+    if (s.length >= 8 && /^[0-9A-Z $%*+\-./:]+$/.test(s) && /[$%*+\-./: ]/.test(s)) {
+      var d45 = decodeBase45(s);
+      if (isReadableText(d45)) return 'base45';
     }
     // Base85: '!'..'u' plus 'z'
     if (/^[!-uz]+$/.test(nospace) && nospace.length >= 8) {
@@ -818,7 +1378,7 @@
     if (decoded.length > 1) {
       return { ok: true, kind: 'multiple', multiple: decoded, extracted: true, format: null };
     }
-    return fail('无法识别为 Base64、Base32、Base58、Hex、URL 编码、Unicode 转义、HTML 实体、摩斯电码或 JWT', fmt);
+    return fail('无法识别为 Base64、Base32、Base58、Base62、Base85、Base91、Base45、Hex、URL 编码、Unicode 转义、HTML 实体、摩斯电码、Quoted-Printable、Punycode 或 JWT（Base122、Base32768、gzip/deflate 请在弹窗手动选择）', fmt);
   }
 
   // Find encoded tokens with positions (for the page scanner). Returns
@@ -942,6 +1502,20 @@
     decodeBase85: decodeBase85,
     encodeBase91: encodeBase91,
     decodeBase91: decodeBase91,
+    encodeBase122: encodeBase122,
+    decodeBase122: decodeBase122,
+    encodeBase32768: encodeBase32768,
+    decodeBase32768: decodeBase32768,
+    encodeBase45: encodeBase45,
+    decodeBase45: decodeBase45,
+    encodeQuotedPrintable: encodeQuotedPrintable,
+    decodeQuotedPrintable: decodeQuotedPrintable,
+    encodePunycode: encodePunycode,
+    decodePunycode: decodePunycode,
+    encodeGzipB64: encodeGzipB64,
+    decodeGzipB64: decodeGzipB64,
+    encodeDeflateB64: encodeDeflateB64,
+    decodeDeflateB64: decodeDeflateB64,
     encodeHex: encodeHex,
     decodeHex: decodeHex,
     encodeBinary: encodeBinary,
@@ -970,6 +1544,7 @@
     looksEncoded: looksEncoded,
     detectImage: detectImage,
     detectCompression: detectCompression,
+    compressBytes: compressBytes,
     decompressBytes: decompressBytes,
     enhanceDecoded: enhanceDecoded,
     bytesToText: bytesToText,
